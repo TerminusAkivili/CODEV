@@ -1,0 +1,20 @@
+{
+  "name": "codev",
+  "displayName": "CO-DEV",
+  "description": "Lightweight .codev.md shape/gate/drift workflow for human accountability in AI-assisted software development.",
+  "version": "0.1.0",
+  "author": {
+    "name": "CO-DEV contributors"
+  },
+  "homepage": "https://github.com/TerminusAkivili/CODEV",
+  "repository": "https://github.com/TerminusAkivili/CODEV",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "human-gate",
+    "ai-collaboration",
+    "architecture",
+    "trace"
+  ],
+  "skills": "./skills/"
+}

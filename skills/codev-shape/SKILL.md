@@ -35,6 +35,7 @@ Coarse roadmap only: phase, subsystem, next gate.
 - Prefill fast; do not interrogate the human unless a choice blocks progress.
 - Evaluate intent/shape fit before implementation: state whether the proposed shape actually satisfies the human intent, then ask for correction if the fit is uncertain.
 - Execution engine records which development skill or tool layer is allowed to help implementation; it does not own approval, gate frequency, or validation.
+- In `Gate: normal`, set the next gate at a demonstrable functionality batch, not at an ordinary function, helper, interface, refactor, or implementation detail.
 - Split into multiple docs only for `Ceremony: audit`, high risk, or explicit request.
 - Update intent/shape only when they actually change.
 - For normal module progress, append one trace line.

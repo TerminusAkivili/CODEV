@@ -68,13 +68,15 @@ For every implementation batch:
 
 Tests, builds, installs, screenshots, and agent confidence are evidence. They are not the human gate.
 
+Gate boundaries are product validation boundaries, not paperwork boundaries. Do not stop a `normal` gate for an internal function, helper, interface, refactor, or implementation detail unless it changes something the human can meaningfully inspect. A `normal` gate should stop at a demonstrable feature batch: something the human can open, try, compare against intent, and approve or redirect.
+
 ## Gate Frequency
 
 | Level | Stop for human review |
 |---|---|
 | `ultra` | Every small module |
 | `strict` | Every feature module |
-| `normal` | A batch of related modules |
+| `normal` | A demonstrable batch of related functionality |
 | `loose` | Completed subsystem |
 | `free` | Final acceptance only, low assurance |
 

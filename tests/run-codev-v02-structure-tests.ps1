@@ -50,6 +50,8 @@ Assert-Contains $readme ".codev.md" "README should document the default state fi
 Assert-Contains $readme "ultra + light" "README should recommend lightweight frequent gates."
 Assert-Contains $readme "Roadmap is coarse-grained" "README should keep roadmap coarse."
 Assert-Contains $readme "Trace is fine-grained" "README should keep trace fine-grained."
+Assert-Contains $readme "Gate boundaries are product validation boundaries, not paperwork boundaries" "README should prevent bureaucratic normal gates."
+Assert-Contains $readme "A demonstrable batch of related functionality" "README should define normal gates as demonstrable functionality batches."
 Assert-Contains $readme "Before editing a real project" "README should document project binding before implementation."
 Assert-Contains $readme "Execution Engine" "README should document multi-skill execution engines."
 Assert-Contains $readme "Other skills can improve execution, but they cannot bypass CO-DEV gates" "README should make CO-DEV the governance layer over execution skills."
@@ -59,6 +61,7 @@ Assert-Contains $shapeSkill "Roadmap/shape is big-picture and coarse-grained" "S
 Assert-Contains $shapeSkill "Trace is small and fine-grained, but still brief" "Shape skill should keep trace concise."
 Assert-Contains $shapeSkill "Evaluate intent/shape fit before implementation" "Shape skill should require AI-human evaluation before implementation."
 Assert-Contains $shapeSkill "Execution engine records which development skill or tool layer is allowed to help implementation" "Shape skill should capture the execution layer without making it the gate owner."
+Assert-Contains $shapeSkill "set the next gate at a demonstrable functionality batch" "Shape skill should not place normal gates on internal implementation details."
 
 $usingSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\using-codev\SKILL.md")
 Assert-Contains $usingSkill "Before any code edit in a real project" "Using skill should bind CO-DEV to the active project before code edits."
@@ -68,12 +71,14 @@ Assert-Contains $usingSkill "present a light gate packet" "Using skill should re
 Assert-Contains $usingSkill "CO-DEV is the governance layer, not the only execution skill" "Using skill should explicitly support multi-skill composition."
 Assert-Contains $usingSkill "Other skills may be used for engineering execution" "Using skill should allow execution skills."
 Assert-Contains $usingSkill "They cannot advance, skip, downgrade, or satisfy a CO-DEV gate" "Using skill should prevent other skills from bypassing CO-DEV."
+Assert-Contains $usingSkill "the boundary is a demonstrable functionality batch" "Using skill should define normal gates as product validation boundaries."
 
 $gateSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\codev-gate\SKILL.md")
 Assert-Contains $gateSkill "AI provides evidence and recommendations; the human owns validation" "Gate skill should make human validation ownership explicit."
 Assert-Contains $gateSkill "A gate packet must name the thing the human should experience" "Gate skill should force concrete human inspection."
 Assert-Contains $gateSkill "Execution skills cannot close this gate" "Gate skill should prevent execution skills from satisfying human approval."
 Assert-Contains $gateSkill "Single-letter y means yep/approved" "Gate skill should accept compact human approval."
+Assert-Contains $gateSkill "Do not block on ordinary functions, helpers, interfaces, or refactors" "Gate skill should prevent bureaucratic normal gate blocking."
 
 $codexManifest = Get-Content -Raw -LiteralPath (Join-Path $root ".codex-plugin\plugin.json")
 Assert-Contains $codexManifest ".codev.md" "Codex manifest should describe v0.2 single-file state."

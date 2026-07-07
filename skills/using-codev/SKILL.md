@@ -35,6 +35,8 @@ Do not treat tests, builds, or installs as a replacement for the human gate. The
 
 At the configured boundary, present a light gate packet and stop unless the human approves.
 
+For `Gate: normal`, the boundary is a demonstrable functionality batch, not every internal function, helper, interface, refactor, or implementation detail. Stop only when the human can meaningfully open, try, compare, approve, or redirect the product behavior.
+
 ## Multi-Skill Composition
 
 CO-DEV is the governance layer, not the only execution skill.

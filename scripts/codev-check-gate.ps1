@@ -71,7 +71,8 @@ if (-not $decision) {
     exit 1
 }
 
-if ($decision -and $decision.ToLowerInvariant() -eq "approved") {
+$approvalWords = @("approved", "approve", "yes", "yep", "y")
+if ($decision -and ($approvalWords -contains $decision.ToLowerInvariant())) {
     Write-Output "Human approval present for gate $currentGate."
     exit 0
 }

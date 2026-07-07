@@ -16,6 +16,7 @@ Use `.codev.md` unless the human asks for split docs.
 
 Gate: normal
 Ceremony: light
+Execution engine: default
 Current gate: none
 Decision: pending
 
@@ -33,6 +34,7 @@ Coarse roadmap only: phase, subsystem, next gate.
 
 - Prefill fast; do not interrogate the human unless a choice blocks progress.
 - Evaluate intent/shape fit before implementation: state whether the proposed shape actually satisfies the human intent, then ask for correction if the fit is uncertain.
+- Execution engine records which development skill or tool layer is allowed to help implementation; it does not own approval, gate frequency, or validation.
 - Split into multiple docs only for `Ceremony: audit`, high risk, or explicit request.
 - Update intent/shape only when they actually change.
 - For normal module progress, append one trace line.

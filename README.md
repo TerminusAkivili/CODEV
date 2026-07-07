@@ -21,6 +21,7 @@ Start with one file:
 
 Gate: normal
 Ceremony: light
+Execution engine: default
 Current gate: none
 Decision: pending
 
@@ -37,6 +38,22 @@ Coarse roadmap: phase, subsystem, next gate.
 Default file: `.codev.md`.
 
 Roadmap is coarse-grained. Trace is fine-grained. Do not spend tokens restating roadmap in trace, and do not turn roadmap into a task log.
+
+## Execution Engine
+
+CO-DEV is the governance layer, not a replacement for engineering skills.
+
+Use `Execution engine:` to record the development skill or tool layer allowed to help implementation:
+
+| Engine | Meaning |
+|---|---|
+| `default` | Use the agent's normal development workflow. |
+| `superpower` | Allow Superpower-style planning, TDD, debugging, review, or execution skills. |
+| `codex` | Allow Codex-native engineering workflow support. |
+| `cursor` | Allow Cursor-native engineering workflow support. |
+| `custom:<name>` | Allow a named project or team execution method. |
+
+Other skills can improve execution, but they cannot bypass CO-DEV gates. They may help design, test, debug, review, or implement; they cannot approve a batch, downgrade a gate, skip human inspection, or replace human validation.
 
 ## Real Project Binding
 
@@ -84,6 +101,7 @@ Most gates should be this small:
 
 ```text
 Gate: gate-002
+Execution engine: superpower
 Done: index.html shell
 Evidence: shell test passed
 Inspect: open index.html

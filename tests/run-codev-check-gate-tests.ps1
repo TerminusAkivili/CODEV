@@ -84,6 +84,17 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "strict gate with compact y approval passes"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "strict" -Ceremony "light" -CurrentGate "gate-1" -Decision "y"
+        $result = Run-Gate -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval present" "Output"
+    }
+}
+
+$tests += @{
     Name = "free mode passes with low assurance warning"
     Run = {
         $dir = New-Fixture

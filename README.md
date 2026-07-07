@@ -38,6 +38,19 @@ Default file: `.codev.md`.
 
 Roadmap is coarse-grained. Trace is fine-grained. Do not spend tokens restating roadmap in trace, and do not turn roadmap into a task log.
 
+## Real Project Binding
+
+Before editing a real project, CO-DEV must bind to that project's own `.codev.md`. Do not rely on a demo folder, plugin repo, or prior conversation state.
+
+For every implementation batch:
+
+1. Confirm or create `.codev.md` in the active project root.
+2. Check that intent/shape match the requested change before editing.
+3. After implementation, append one short Trace line with change, evidence, and next gate.
+4. If the gate boundary is reached, present a light gate packet and wait for the human decision.
+
+Tests, builds, installs, screenshots, and agent confidence are evidence. They are not the human gate.
+
 ## Gate Frequency
 
 | Level | Stop for human review |

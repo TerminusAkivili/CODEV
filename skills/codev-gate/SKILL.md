@@ -17,6 +17,8 @@ Applies to every gate except `Gate: free`.
 
 AI provides evidence and recommendations; the human owns validation. Automated tests, screenshots, and agent confidence can support a gate, but they cannot replace human approval.
 
+A gate packet must name the thing the human should experience, not just the files changed or commands passed.
+
 ## Light Gate Packet
 
 Default to chat:

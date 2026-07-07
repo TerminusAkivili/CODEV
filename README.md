@@ -21,6 +21,7 @@ Start with one file:
 
 Gate: normal
 Ceremony: light
+Execution engine: default
 Current gate: none
 Decision: pending
 
@@ -38,6 +39,22 @@ Default file: `.codev.md`.
 
 Roadmap is coarse-grained. Trace is fine-grained. Do not spend tokens restating roadmap in trace, and do not turn roadmap into a task log.
 
+## Execution Engine
+
+CO-DEV is the governance layer, not a replacement for engineering skills.
+
+Use `Execution engine:` to record the development skill or tool layer allowed to help implementation:
+
+| Engine | Meaning |
+|---|---|
+| `default` | Use the agent's normal development workflow. |
+| `superpower` | Allow Superpower-style planning, TDD, debugging, review, or execution skills. |
+| `codex` | Allow Codex-native engineering workflow support. |
+| `cursor` | Allow Cursor-native engineering workflow support. |
+| `custom:<name>` | Allow a named project or team execution method. |
+
+Other skills can improve execution, but they cannot bypass CO-DEV gates. They may help design, test, debug, review, or implement; they cannot approve a batch, downgrade a gate, skip human inspection, or replace human validation.
+
 ## Real Project Binding
 
 Before editing a real project, CO-DEV must bind to that project's own `.codev.md`. Do not rely on a demo folder, plugin repo, or prior conversation state.
@@ -51,13 +68,15 @@ For every implementation batch:
 
 Tests, builds, installs, screenshots, and agent confidence are evidence. They are not the human gate.
 
+Gate boundaries are product validation boundaries, not paperwork boundaries. Do not stop a `normal` gate for an internal function, helper, interface, refactor, or implementation detail unless it changes something the human can meaningfully inspect. A `normal` gate should stop at a demonstrable feature batch: something the human can open, try, compare against intent, and approve or redirect.
+
 ## Gate Frequency
 
 | Level | Stop for human review |
 |---|---|
 | `ultra` | Every small module |
 | `strict` | Every feature module |
-| `normal` | A batch of related modules |
+| `normal` | A demonstrable batch of related functionality |
 | `loose` | Completed subsystem |
 | `free` | Final acceptance only, low assurance |
 
@@ -84,6 +103,7 @@ Most gates should be this small:
 
 ```text
 Gate: gate-002
+Execution engine: superpower
 Done: index.html shell
 Evidence: shell test passed
 Inspect: open index.html

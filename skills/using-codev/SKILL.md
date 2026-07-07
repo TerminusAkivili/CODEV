@@ -15,6 +15,7 @@ Required fields:
 
 - `Gate: ultra|strict|normal|loose|free`
 - `Ceremony: light|standard|audit`
+- `Execution engine: default|superpower|codex|cursor|custom:<name>`
 - `Current gate: none|gate-id`
 - `Decision: pending|approved|redirected|rejected`
 
@@ -33,6 +34,24 @@ After implementation work, append one short Trace line: change, evidence, drift 
 Do not treat tests, builds, or installs as a replacement for the human gate. They are evidence only.
 
 At the configured boundary, present a light gate packet and stop unless the human approves.
+
+For `Gate: normal`, the boundary is a demonstrable functionality batch, not every internal function, helper, interface, refactor, or implementation detail. Stop only when the human can meaningfully open, try, compare, approve, or redirect the product behavior.
+
+## Multi-Skill Composition
+
+CO-DEV is the governance layer, not the only execution skill.
+
+Other skills may be used for engineering execution: planning, TDD, debugging, review, implementation, refactoring, or platform-specific workflows. Record the active execution layer in `Execution engine:` when it materially affects the work.
+
+They cannot advance, skip, downgrade, or satisfy a CO-DEV gate. They also cannot convert human validation into automated evidence. When another execution skill conflicts with CO-DEV, CO-DEV owns intent, gate frequency, trace, drift handling, and the next-batch decision.
+
+When reporting work, state both layers briefly:
+
+```text
+CO-DEV: active, gate normal, ceremony light
+Execution engine: superpower
+Gate status: pending human review
+```
 
 ## Routing
 

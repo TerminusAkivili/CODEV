@@ -1,12 +1,12 @@
 {
   "name": "codev",
   "version": "0.1.0",
-  "description": "Human accountability gates for AI-assisted software development.",
+  "description": "Human accountability gates for AI-assisted software development that composes with execution skills.",
   "author": {
     "name": "CO-DEV contributors"
   },
-  "homepage": "https://github.com/TerminusAkivili/CODEV",
-  "repository": "https://github.com/TerminusAkivili/CODEV",
+  "homepage": "https://github.com/codev-method/codev",
+  "repository": "https://github.com/codev-method/codev",
   "license": "MIT",
   "keywords": [
     "codev",
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "CO-DEV",
     "shortDescription": "Human accountability gates for AI-assisted development",
-    "longDescription": "Use CO-DEV to keep AI-assisted software development aligned with human intent through a lightweight .codev.md state file, shape/gate/drift skills, ceremony weight, and human-owned approval gates.",
+    "longDescription": "Use CO-DEV to keep AI-assisted software development aligned with human intent through a lightweight .codev.md state file, shape/gate/drift skills, ceremony weight, execution engine state, and human-owned approval gates. It composes with execution skills while preventing them from bypassing human gates.",
     "developerName": "CO-DEV contributors",
     "category": "Coding",
     "capabilities": [
@@ -33,7 +33,7 @@
       "Start a CO-DEV project with human gates.",
       "Use CO-DEV to keep this implementation aligned with my intent."
     ],
-    "websiteURL": "https://github.com/TerminusAkivili/CODEV",
+    "websiteURL": "https://github.com/codev-method/codev",
     "brandColor": "#0EA5E9"
   }
 }

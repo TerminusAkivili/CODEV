@@ -91,12 +91,6 @@ if ($codexManifest -like "*requirements, architecture, roadmap, trace, drift con
 $template = Get-Content -Raw -LiteralPath (Join-Path $root "templates\codev.md")
 Assert-Contains $template "Execution engine:" "Template should include execution engine state."
 
-$ciWorkflow = Get-Content -Raw -LiteralPath (Join-Path $root ".github\workflows\codev-ci.yml")
-Assert-Contains $ciWorkflow "pull_request:" "GitHub CI should run on pull requests."
-Assert-Contains $ciWorkflow "push:" "GitHub CI should run on pushes."
-Assert-Contains $ciWorkflow "run-codev-v02-structure-tests.ps1" "GitHub CI should run structure tests."
-Assert-Contains $ciWorkflow "run-codev-check-gate-tests.ps1" "GitHub CI should run gate tests."
-
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("codev-v02-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $fixture | Out-Null
 Set-Content -LiteralPath (Join-Path $fixture ".codev.md") -Value @"

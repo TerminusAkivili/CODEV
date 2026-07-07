@@ -127,12 +127,3 @@ powershell -ExecutionPolicy Bypass -File .\scripts\codev-check-gate.ps1 -Project
 ```
 
 The checker reads `.codev.md` by default. It is a guardrail; the skill still owns judgment.
-
-## GitHub CI
-
-CO-DEV uses GitHub Actions for lightweight repository checks on every push and pull request:
-
-- `tests/run-codev-v02-structure-tests.ps1`
-- `tests/run-codev-check-gate-tests.ps1`
-
-There is no deployment target yet, so CD is intentionally left out. The workflow verifies the skill package before it is merged or released.

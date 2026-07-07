@@ -1,0 +1,39 @@
+{
+  "name": "codev",
+  "version": "0.1.0",
+  "description": "Human accountability gates for AI-assisted software development.",
+  "author": {
+    "name": "CO-DEV contributors"
+  },
+  "homepage": "https://github.com/TerminusAkivili/CODEV",
+  "repository": "https://github.com/TerminusAkivili/CODEV",
+  "license": "MIT",
+  "keywords": [
+    "codev",
+    "co-dev",
+    "human-gate",
+    "ai-collaboration",
+    "skills",
+    "architecture",
+    "trace"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CO-DEV",
+    "shortDescription": "Human accountability gates for AI-assisted development",
+    "longDescription": "Use CO-DEV to keep AI-assisted software development aligned with human intent through a lightweight .codev.md state file, shape/gate/drift skills, ceremony weight, and human-owned approval gates.",
+    "developerName": "CO-DEV contributors",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Start a CO-DEV project with human gates.",
+      "Use CO-DEV to keep this implementation aligned with my intent."
+    ],
+    "websiteURL": "https://github.com/TerminusAkivili/CODEV",
+    "brandColor": "#0EA5E9"
+  }
+}

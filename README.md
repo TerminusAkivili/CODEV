@@ -6,7 +6,7 @@ AI cannot read your mind. A loop engine can keep working, a harness agent can ke
 
 ## Why
 
-I had documents, architecture notes, trace logs, a roadmap, and a working Android version. Then I spent one day and about $300 trying to migrate the product to Windows with AI.
+I had documents, architecture notes, trace logs, a roadmap, and a working Android version. Then I spent one day trying to migrate the product to Windows with AI.
 
 The failure was slow. Each subsystem looked almost reasonable. By the time the drift was obvious, it was no longer one bug. It was the shape of the system.
 

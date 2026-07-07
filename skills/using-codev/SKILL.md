@@ -20,6 +20,20 @@ Required fields:
 
 Default recommendation: `Gate: normal`, `Ceremony: light`. If the human chooses `ultra`, keep ceremony light unless they request audit detail.
 
+## Real Project Binding
+
+Before any code edit in a real project, bind CO-DEV to the active project root:
+
+1. Look for `.codev.md` in the project being edited, not in a demo, plugin, or previous workspace.
+2. If missing, use `codev-shape` to create the compact file before implementation.
+3. Evaluate whether current intent/shape matches the requested change.
+
+After implementation work, append one short Trace line: change, evidence, drift if any, next gate.
+
+Do not treat tests, builds, or installs as a replacement for the human gate. They are evidence only.
+
+At the configured boundary, present a light gate packet and stop unless the human approves.
+
 ## Routing
 
 - Need initial intent/shape/trace: use `codev-shape`.

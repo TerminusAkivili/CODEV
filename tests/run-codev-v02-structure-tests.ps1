@@ -50,14 +50,22 @@ Assert-Contains $readme ".codev.md" "README should document the default state fi
 Assert-Contains $readme "ultra + light" "README should recommend lightweight frequent gates."
 Assert-Contains $readme "Roadmap is coarse-grained" "README should keep roadmap coarse."
 Assert-Contains $readme "Trace is fine-grained" "README should keep trace fine-grained."
+Assert-Contains $readme "Before editing a real project" "README should document project binding before implementation."
 
 $shapeSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\codev-shape\SKILL.md")
 Assert-Contains $shapeSkill "Roadmap/shape is big-picture and coarse-grained" "Shape skill should prevent roadmap task logs."
 Assert-Contains $shapeSkill "Trace is small and fine-grained, but still brief" "Shape skill should keep trace concise."
 Assert-Contains $shapeSkill "Evaluate intent/shape fit before implementation" "Shape skill should require AI-human evaluation before implementation."
 
+$usingSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\using-codev\SKILL.md")
+Assert-Contains $usingSkill "Before any code edit in a real project" "Using skill should bind CO-DEV to the active project before code edits."
+Assert-Contains $usingSkill "Do not treat tests, builds, or installs as a replacement for the human gate" "Using skill should not let engineering verification replace human review."
+Assert-Contains $usingSkill "append one short Trace line" "Using skill should require lightweight trace after implementation work."
+Assert-Contains $usingSkill "present a light gate packet" "Using skill should require a human review packet at gate boundaries."
+
 $gateSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\codev-gate\SKILL.md")
 Assert-Contains $gateSkill "AI provides evidence and recommendations; the human owns validation" "Gate skill should make human validation ownership explicit."
+Assert-Contains $gateSkill "A gate packet must name the thing the human should experience" "Gate skill should force concrete human inspection."
 
 $codexManifest = Get-Content -Raw -LiteralPath (Join-Path $root ".codex-plugin\plugin.json")
 Assert-Contains $codexManifest ".codev.md" "Codex manifest should describe v0.2 single-file state."

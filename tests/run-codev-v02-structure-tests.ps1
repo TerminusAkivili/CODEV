@@ -55,6 +55,14 @@ Assert-Contains $readme "A demonstrable batch of related functionality" "README 
 Assert-Contains $readme "Before editing a real project" "README should document project binding before implementation."
 Assert-Contains $readme "Execution Engine" "README should document multi-skill execution engines."
 Assert-Contains $readme "Other skills can improve execution, but they cannot bypass CO-DEV gates" "README should make CO-DEV the governance layer over execution skills."
+Assert-Contains $readme "CodeV is the governance layer" "README should explain CodeV as governance rather than execution."
+Assert-Contains $readme "CodeV manages direction" "README should explain CodeV owns intent, batch, and review timing."
+Assert-Contains $readme "Superpowers / Codex manage execution" "README should explain execution layers remain separate."
+Assert-Contains $readme "Humans own approval" "README should explain tests/builds are evidence, not approval."
+Assert-Contains $readme "Project Architecture" "README should include the CodeV project architecture."
+Assert-Contains $readme "Typical Workflow" "README should describe the CodeV workflow order."
+Assert-Contains $readme "CodeV = governance layer" "README should summarize the CodeV/Superpowers relationship."
+Assert-Contains $readme "First CodeV: read .codev.md + using-codev" "README should document the correct execution order."
 
 $shapeSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\codev-shape\SKILL.md")
 Assert-Contains $shapeSkill "Roadmap/shape is big-picture and coarse-grained" "Shape skill should prevent roadmap task logs."
@@ -64,6 +72,9 @@ Assert-Contains $shapeSkill "Execution engine records which development skill or
 Assert-Contains $shapeSkill "set the next gate at a demonstrable functionality batch" "Shape skill should not place normal gates on internal implementation details."
 
 $usingSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\using-codev\SKILL.md")
+Assert-Contains $usingSkill "If the human asks to start, use, enable, or launch CodeV" "Using skill should explicitly trigger when the human names CodeV."
+Assert-Contains $usingSkill "load `.codev.md` and this `using-codev` skill before any other execution workflow" "Using skill should require explicit project-state and skill loading before execution skills."
+Assert-Contains $usingSkill "Treat CodeV like an active project rule layer, not ambient memory" "Using skill should prevent relying on prior conversation memory for CodeV."
 Assert-Contains $usingSkill "Before any code edit in a real project" "Using skill should bind CO-DEV to the active project before code edits."
 Assert-Contains $usingSkill "Do not treat tests, builds, or installs as a replacement for the human gate" "Using skill should not let engineering verification replace human review."
 Assert-Contains $usingSkill "append one short Trace line" "Using skill should require lightweight trace after implementation work."

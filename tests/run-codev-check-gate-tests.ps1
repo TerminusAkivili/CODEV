@@ -14,9 +14,17 @@ function New-Fixture {
 }
 
 function Run-Gate {
-    param([string]$ProjectRoot)
+    param(
+        [string]$ProjectRoot,
+        [switch]$Status
+    )
 
-    $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -ProjectRoot $ProjectRoot 2>&1
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-ProjectRoot", $ProjectRoot)
+    if ($Status) {
+        $args += "-Status"
+    }
+
+    $output = & powershell @args 2>&1
     return [pscustomobject]@{
         ExitCode = $LASTEXITCODE
         Output = ($output | Out-String)
@@ -28,6 +36,7 @@ function Write-State {
         [string]$ProjectRoot,
         [string]$Gate,
         [string]$Ceremony,
+        [string]$ExecutionEngine = "superpower",
         [string]$CurrentGate,
         [string]$Decision
     )
@@ -37,6 +46,7 @@ function Write-State {
 
 Gate: $Gate
 Ceremony: $Ceremony
+Execution engine: $ExecutionEngine
 Current gate: $CurrentGate
 Decision: $Decision
 
@@ -123,6 +133,22 @@ $tests += @{
         $result = Run-Gate -ProjectRoot $dir
         Assert-Equal $result.ExitCode 0 "Exit code"
         Assert-Contains $result.Output "No current gate" "Output"
+    }
+}
+
+$tests += @{
+    Name = "status prints current codev state"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "normal" -Ceremony "light" -CurrentGate "gate-status" -Decision "pending"
+        $result = Run-Gate -ProjectRoot $dir -Status
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "CO-DEV status" "Output"
+        Assert-Contains $result.Output "Gate: normal" "Output"
+        Assert-Contains $result.Output "Ceremony: light" "Output"
+        Assert-Contains $result.Output "Execution engine: superpower" "Output"
+        Assert-Contains $result.Output "Current gate: gate-status" "Output"
+        Assert-Contains $result.Output "Decision: pending" "Output"
     }
 }
 

@@ -12,6 +12,142 @@ The failure was slow. Each subsystem looked almost reasonable. By the time the d
 
 CO-DEV exists because better instructions are not enough. Human checkpoints must be cheap enough to use and strict enough to stop drift.
 
+## Core Position
+
+CodeV is the governance layer for AI-assisted development, not the code-writing executor. It keeps AI work bound to the right project, the right phase, and the right human checkpoint so implementation does not drift away from the human's intent.
+
+- CodeV manages direction: what the human wants, which batch is active, and when work must stop for human review.
+- Superpowers / Codex manage execution: TDD, debugging, implementation, verification, builds, and other engineering workflows.
+- Humans own approval: tests passing, builds succeeding, installs, screenshots, and agent confidence are evidence only; they cannot replace a human saying the batch is approved.
+
+## Project Architecture
+
+```text
+codev/
+  README.md
+  templates/
+    codev.md
+  skills/
+    using-codev/
+      SKILL.md
+    codev-shape/
+      SKILL.md
+    codev-gate/
+      SKILL.md
+    codev-drift/
+      SKILL.md
+  scripts/
+    codev-check-gate.ps1
+  tests/
+    run-codev-v02-structure-tests.ps1
+    run-codev-check-gate-tests.ps1
+  .codex-plugin/
+    plugin.json
+  .claude-plugin/
+    plugin.json
+    marketplace.json
+  .cursor-plugin/
+    plugin.json
+```
+
+### `.codev.md`: Project State
+
+`.codev.md` is the core runtime state file. It lives at the root of the project being developed, not inside a demo folder or previous workspace.
+
+```text
+Gate: normal
+Ceremony: light
+Execution engine: superpower
+Current gate: batch-windows-main-shell
+Decision: pending
+```
+
+- `Gate`: how often AI work must stop for human inspection.
+- `Ceremony`: how heavy the notes and review packet should be.
+- `Execution engine`: the active implementation layer, such as `superpower`.
+- `Current gate`: the active human checkpoint.
+- `Decision`: whether the human has approved, redirected, rejected, or left the gate pending.
+
+The file has three working sections:
+
+- `Intent`: what the human actually wants.
+- `Shape`: the current phase, subsystem, and next checkpoint.
+- `Trace`: one short line per implementation batch.
+
+### `skills/`: Behavior Rules
+
+CodeV currently has four skills:
+
+- `using-codev`: entry rule. If the human asks to start, use, enable, or launch CodeV, the agent must load `.codev.md` and `using-codev` before any execution workflow.
+- `codev-shape`: maintains the lightweight project shape and `.codev.md` state without turning it into heavy documentation.
+- `codev-gate`: enforces human checkpoints. Core rule: no approval, no next module.
+- `codev-drift`: corrects product drift, shape drift, test drift, gate drift, ceremony drift, and granularity drift.
+
+### `scripts/`: Mechanical Guardrails
+
+`scripts/codev-check-gate.ps1` is a lightweight gate checker. It reads `.codev.md` and reports whether the current gate permits work to continue.
+
+- `Decision: pending` blocks continuation unless `Gate: free`.
+- `Decision: approved` or `Decision: y` passes.
+- `Current gate: none` means there is no active approval block.
+- `-Status` prints the active CodeV state: Gate, Ceremony, Execution engine, Current gate, and Decision.
+
+The script is a mechanical guardrail. The CodeV skills still own judgment about intent, shape, drift, and human review.
+
+### `tests/`: Self-Testing Rules
+
+CodeV is maintained as a testable rule system.
+
+- `run-codev-v02-structure-tests.ps1` checks the skill set, frontmatter, README, manifests, templates, and required rule text. The explicit CodeV activation rule is tested here.
+- `run-codev-check-gate-tests.ps1` checks gate checker behavior: pending blocks, approved passes, `y` passes, `free` warns but passes, missing state fails, and `-Status` prints current state.
+
+### `templates/`: Default State
+
+`templates/codev.md` is the default `.codev.md` starter. It keeps CodeV single-file and low-friction:
+
+```text
+Intent + Shape + Trace
+```
+
+CodeV does not create separate requirements, roadmap, review, and audit files by default. Split documents are reserved for `Ceremony: audit`, high-risk work, large projects, or explicit human request.
+
+### Plugin Shells
+
+`.codex-plugin/`, `.claude-plugin/`, and `.cursor-plugin/` package CodeV for different AI environments. They let CodeV operate as a reusable workflow plugin instead of being tied to a single product repository.
+
+## Typical Workflow
+
+```text
+Human says start CodeV
+-> read the project root .codev.md
+-> read using-codev
+-> check whether Intent / Shape match the requested work
+-> use the configured Execution engine, such as Superpowers or Codex
+-> append one short Trace line after the batch
+-> at a gate boundary, present a light gate packet
+-> human decides: approved / redirected / rejected
+-> continue only if the gate allows it
+```
+
+## Relationship To Superpowers
+
+The key separation is:
+
+```text
+CodeV = governance layer
+Superpowers = execution layer
+```
+
+Superpowers can help with TDD, debugging, implementation plans, verification, review, and builds. It cannot satisfy a CodeV gate, bypass `.codev.md`, or replace human approval.
+
+The correct order is:
+
+```text
+First CodeV: read .codev.md + using-codev
+Then Superpowers: execute under the configured Execution engine
+Finally CodeV: write Trace, present the gate packet, and wait for approval when required
+```
+
 ## Quickstart
 
 Start with one file:

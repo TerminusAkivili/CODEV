@@ -1,6 +1,7 @@
 param(
     [string]$ProjectRoot = ".",
-    [string]$StatePath
+    [string]$StatePath,
+    [switch]$Status
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,8 +32,19 @@ if (-not (Test-Path -LiteralPath $StatePath)) {
 $state = Get-Content -Raw -LiteralPath $StatePath
 $gateLevel = Read-Field -Text $state -Name "Gate"
 $ceremony = Read-Field -Text $state -Name "Ceremony"
+$executionEngine = Read-Field -Text $state -Name "Execution engine"
 $currentGate = Read-Field -Text $state -Name "Current gate"
 $decision = Read-Field -Text $state -Name "Decision"
+
+if ($Status) {
+    Write-Output "CO-DEV status"
+    Write-Output "Gate: $gateLevel"
+    Write-Output "Ceremony: $ceremony"
+    Write-Output "Execution engine: $executionEngine"
+    Write-Output "Current gate: $currentGate"
+    Write-Output "Decision: $decision"
+    exit 0
+}
 
 if (-not $gateLevel) {
     Write-Output "Missing 'Gate' in .codev.md."

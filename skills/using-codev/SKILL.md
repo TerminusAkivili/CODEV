@@ -7,6 +7,16 @@ description: Use when starting or continuing AI-assisted development where human
 
 CO-DEV keeps AI-assisted development accountable without turning every step into paperwork.
 
+## Explicit Activation
+
+If the human asks to start, use, enable, or launch CodeV, load `.codev.md` and this `using-codev` skill before any other execution workflow.
+
+Plain rule: load .codev.md and this using-codev skill before any other execution workflow.
+
+Treat CodeV like an active project rule layer, not ambient memory. Do not rely on prior conversation state, project familiarity, or another workflow skill as proof that CO-DEV is active.
+
+When another workflow is also requested, activate CO-DEV first, bind it to the active project root, then run the requested execution workflow under the recorded `Execution engine:`.
+
 ## State
 
 Look for `.codev.md`. If missing, use `codev-shape` to prefill one compact file.

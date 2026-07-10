@@ -23,6 +23,21 @@ function Assert-Contains {
     }
 }
 
+function Assert-ContainsCount {
+    param([string]$Text, [string]$Needle, [int]$ExpectedCount, [string]$Message)
+    $actualCount = ([regex]::Matches($Text, [regex]::Escape($Needle), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)).Count
+    if ($actualCount -ne $ExpectedCount) {
+        throw "$Message Expected '$Needle' $ExpectedCount times but found $actualCount."
+    }
+}
+
+function Get-PowerShellExecutable {
+    if ($PSVersionTable.PSEdition -eq "Core") {
+        return (Get-Process -Id $PID).Path
+    }
+    return (Join-Path $PSHOME "powershell.exe")
+}
+
 $expectedSkills = @(
     "using-codev",
     "codev-shape",
@@ -75,6 +90,10 @@ Assert-Contains $readme "Pre-v0.3 migration" "README should document migration f
 Assert-Contains $readme "transactional approval" "README should document approval write integrity."
 Assert-Contains $readme "preserves the supported original encoding and BOM" "README should document encoding preservation."
 Assert-Contains $readme "new unmarked state files and the default template remain UTF-8 without BOM" "README should document the default encoding."
+Assert-Contains $readme "v0.3 gate tests cover six-field validation" "README should state the complete gate test validation scope."
+Assert-Contains $readme "exact case-sensitive Decision gate binding" "README should state the gate binding proof."
+Assert-Contains $readme "approval transitions" "README should state the approval transition proof."
+Assert-Contains $readme "transactional encoding/BOM preservation" "README should state the approval write preservation proof."
 
 $shapeSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\codev-shape\SKILL.md")
 Assert-Contains $shapeSkill "Roadmap/shape is big-picture and coarse-grained" "Shape skill should prevent roadmap task logs."
@@ -141,8 +160,17 @@ Assert-Contains $designSpec "unmarked new state files and the default template r
 $ciWorkflow = Get-Content -Raw -LiteralPath (Join-Path $root ".github\workflows\codev-ci.yml")
 Assert-Contains $ciWorkflow "pull_request:" "GitHub CI should run on pull requests."
 Assert-Contains $ciWorkflow "push:" "GitHub CI should run on pushes."
-Assert-Contains $ciWorkflow "run-codev-v02-structure-tests.ps1" "GitHub CI should run structure tests."
-Assert-Contains $ciWorkflow "run-codev-check-gate-tests.ps1" "GitHub CI should run gate tests."
+Assert-Contains $ciWorkflow "workflow_dispatch:" "GitHub CI should support manual runs."
+Assert-Contains $ciWorkflow "contents: read" "GitHub CI should keep read-only repository permissions."
+Assert-Contains $ciWorkflow "windows-latest" "GitHub CI should include Windows in the cross-platform matrix."
+Assert-Contains $ciWorkflow "ubuntu-latest" "GitHub CI should include Ubuntu in the cross-platform matrix."
+Assert-Contains $ciWorkflow "macos-latest" "GitHub CI should include macOS in the cross-platform matrix."
+Assert-Contains $ciWorkflow "shell: pwsh" "GitHub CI should use PowerShell 7 for the cross-platform job."
+Assert-Contains $ciWorkflow "Windows PowerShell 5.1 compatibility" "GitHub CI should have a separate Windows PowerShell 5.1 compatibility job."
+Assert-Contains $ciWorkflow "shell: powershell" "GitHub CI should use Windows PowerShell for the compatibility job."
+Assert-ContainsCount $ciWorkflow "run-codev-v02-structure-tests.ps1" 2 "Both GitHub CI jobs should run structure tests."
+Assert-ContainsCount $ciWorkflow "run-codev-check-gate-tests.ps1" 2 "Both GitHub CI jobs should run gate tests."
+Assert-ContainsCount $ciWorkflow "powershell -NoProfile -ExecutionPolicy Bypass" 2 "The Windows PowerShell compatibility job should invoke both suites explicitly."
 
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("codev-v03-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $fixture | Out-Null
@@ -161,7 +189,8 @@ Test fixture.
 "@
 
 $script = Join-Path $root "scripts\codev-check-gate.ps1"
-$output = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -ProjectRoot $fixture 2>&1
+$powerShellExecutable = Get-PowerShellExecutable
+$output = & $powerShellExecutable -NoProfile -ExecutionPolicy Bypass -File $script -ProjectRoot $fixture 2>&1
 Assert-Equal $LASTEXITCODE 1 "Pending non-free gate should block."
 Assert-Contains ($output | Out-String) "Human approval missing" "Pending gate output"
 
@@ -179,7 +208,7 @@ Decision gate: gate-001
 Test fixture.
 "@
 
-$output = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -ProjectRoot $fixture 2>&1
+$output = & $powerShellExecutable -NoProfile -ExecutionPolicy Bypass -File $script -ProjectRoot $fixture 2>&1
 Assert-Equal $LASTEXITCODE 0 "Compact approval should pass."
 Assert-Contains ($output | Out-String) "Human approval present" "Approved gate output"
 

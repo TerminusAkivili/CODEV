@@ -117,7 +117,7 @@ The CLI is a mechanical guardrail. The CodeV skills still own judgment about int
 CodeV is maintained as a testable rule system.
 
 - `run-codev-v02-structure-tests.ps1` checks the skill set, frontmatter, README, manifests, templates, and required rule text. The explicit CodeV activation rule is tested here.
-- `run-codev-check-gate-tests.ps1` checks gate checker behavior: pending blocks, approved passes, `y` passes, `free` warns but passes, missing state fails, and `-Status` prints current state.
+- `run-codev-check-gate-tests.ps1` v0.3 gate tests cover six-field validation, exact case-sensitive Decision gate binding, approval transitions, and transactional encoding/BOM preservation.
 
 ### `templates/`: Default State
 
@@ -295,5 +295,7 @@ CO-DEV uses GitHub Actions for lightweight repository checks on every push and p
 
 - `tests/run-codev-v02-structure-tests.ps1`
 - `tests/run-codev-check-gate-tests.ps1`
+
+The PowerShell 7 matrix runs both suites on Windows, Ubuntu, and macOS. A separate Windows PowerShell 5.1 compatibility job runs both suites on `windows-latest`.
 
 There is no deployment target yet, so CD is intentionally left out. The workflow verifies the skill package before it is merged or released.

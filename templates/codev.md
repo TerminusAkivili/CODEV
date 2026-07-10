@@ -5,6 +5,7 @@ Ceremony: light
 Execution engine: default
 Current gate: none
 Decision: pending
+Decision gate: none
 
 ## Intent
 

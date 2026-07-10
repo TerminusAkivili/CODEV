@@ -19,6 +19,8 @@ AI provides evidence and recommendations; the human owns validation. Automated t
 
 Execution skills cannot close this gate. Planning, TDD, debugging, review, build, install, or screenshot skills may strengthen the evidence, but only the human can approve, redirect, or reject the next batch.
 
+Decision gate must be exactly identical to Current gate for an active gate. Gate identity uses ordinal, case-sensitive comparison without Unicode normalization; never reuse or normalize an approval from a different gate identifier. The reserved no-gate sentinel is exactly lowercase `none`.
+
 A gate packet must name the thing the human should experience, not just the files changed or commands passed.
 
 `Gate: normal` is not a gate for every code-level change. Do not block on ordinary functions, helpers, interfaces, or refactors unless they create a human-visible behavior change. In normal mode, the review boundary is a demonstrable batch of related functionality.

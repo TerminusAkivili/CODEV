@@ -114,7 +114,7 @@ Assert-Contains $shapeSkill 'no gate means `Decision: pending` plus `Decision ga
 
 $usingSkill = Get-Content -Raw -LiteralPath (Join-Path $root "skills\using-codev\SKILL.md")
 Assert-Contains $usingSkill "If the human asks to start, use, enable, or launch CodeV" "Using skill should explicitly trigger when the human names CodeV."
-Assert-Contains $usingSkill "load `.codev.md` and this `using-codev` skill before any other execution workflow" "Using skill should require explicit project-state and skill loading before execution skills."
+Assert-Contains $usingSkill 'load `.codev.md` and this `using-codev` skill before any other execution workflow' "Using skill should require explicit project-state and skill loading before execution skills."
 Assert-Contains $usingSkill "Treat CodeV like an active project rule layer, not ambient memory" "Using skill should prevent relying on prior conversation memory for CodeV."
 Assert-Contains $usingSkill "Before any code edit in a real project" "Using skill should bind CO-DEV to the active project before code edits."
 Assert-Contains $usingSkill "Do not treat tests, builds, or installs as a replacement for the human gate" "Using skill should not let engineering verification replace human review."

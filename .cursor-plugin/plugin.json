@@ -2,7 +2,7 @@
   "name": "codev",
   "displayName": "CO-DEV",
   "description": "Lightweight .codev.md shape/gate/drift workflow for human accountability that composes with execution skills.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "author": {
     "name": "CO-DEV contributors"
   },

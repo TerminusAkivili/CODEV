@@ -1,6 +1,6 @@
 {
   "name": "codev",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Human accountability gates for AI-assisted software development that composes with execution skills.",
   "author": {
     "name": "CO-DEV contributors"

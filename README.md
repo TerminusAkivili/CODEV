@@ -37,6 +37,7 @@ codev/
     codev-drift/
       SKILL.md
   scripts/
+    codev.ps1
     codev-check-gate.ps1
   tests/
     run-codev-v02-structure-tests.ps1
@@ -60,13 +61,19 @@ Ceremony: light
 Execution engine: superpower
 Current gate: batch-windows-main-shell
 Decision: pending
+Decision gate: batch-windows-main-shell
 ```
+
+The six required metadata fields are:
 
 - `Gate`: how often AI work must stop for human inspection.
 - `Ceremony`: how heavy the notes and review packet should be.
 - `Execution engine`: the active implementation layer, such as `superpower`.
 - `Current gate`: the active human checkpoint.
 - `Decision`: whether the human has approved, redirected, rejected, or left the gate pending.
+- `Decision gate`: the gate identifier to which the decision belongs.
+
+Decision gate must exactly match Current gate when a gate is active. A new gate starts with `Decision: pending` and the matching `Decision gate`; no active gate requires `Decision: pending` and `Decision gate: none`.
 
 The file has three working sections:
 
@@ -85,14 +92,25 @@ CodeV currently has four skills:
 
 ### `scripts/`: Mechanical Guardrails
 
-`scripts/codev-check-gate.ps1` is a lightweight gate checker. It reads `.codev.md` and reports whether the current gate permits work to continue.
+`scripts/codev.ps1` is the canonical cross-platform CLI. It validates `.codev.md` before every command:
 
-- `Decision: pending` blocks continuation unless `Gate: free`.
-- `Decision: approved` or `Decision: y` passes.
-- `Current gate: none` means there is no active approval block.
-- `-Status` prints the active CodeV state: Gate, Ceremony, Execution engine, Current gate, and Decision.
+```powershell
+pwsh -File scripts/codev.ps1 check -ProjectRoot .
+pwsh -File scripts/codev.ps1 status -ProjectRoot .
+pwsh -File scripts/codev.ps1 approve -ProjectRoot . -GateId gate-id
+```
 
-The script is a mechanical guardrail. The CodeV skills still own judgment about intent, shape, drift, and human review.
+- `check` returns `0` when continuation is allowed, `1` when a valid human gate blocks, and `2` for missing or invalid state.
+- `status` prints all six validated fields.
+- `approve` requires an exact, case-sensitive gate identifier and updates both decision fields.
+
+Windows PowerShell 5.1 remains supported on Windows. macOS and Linux require PowerShell 7 (`pwsh`); PowerShell 7 is also supported on Windows.
+
+`scripts/codev-check-gate.ps1` remains the compatibility wrapper for the original Windows command. It delegates check and `-Status` operations to `scripts/codev.ps1` and forwards the exit code.
+
+The `approve` command performs a transactional approval write: failure leaves the file unchanged, and success preserves the supported original encoding and BOM, newline style, and non-field content. New unmarked state files and the default template remain UTF-8 without BOM.
+
+The CLI is a mechanical guardrail. The CodeV skills still own judgment about intent, shape, drift, and human review.
 
 ### `tests/`: Self-Testing Rules
 
@@ -160,6 +178,7 @@ Ceremony: light
 Execution engine: default
 Current gate: none
 Decision: pending
+Decision gate: none
 
 ## Intent
 What the human wants.
@@ -244,6 +263,7 @@ Done: index.html shell
 Evidence: shell test passed
 Inspect: open index.html
 Decision: approved / redirected / rejected
+Decision gate: gate-002
 ```
 
 No approval, no next module.
@@ -260,9 +280,14 @@ Use the plugin shell for your agent environment:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\codev-check-gate.ps1 -ProjectRoot .
+powershell -ExecutionPolicy Bypass -File .\scripts\codev-check-gate.ps1 -ProjectRoot . -Status
 ```
 
-The checker reads `.codev.md` by default. It is a guardrail; the skill still owns judgment.
+The compatibility checker reads `.codev.md` by default. It is a guardrail; the skill still owns judgment.
+
+### Pre-v0.3 migration
+
+Pre-v0.3 state files must add `Decision gate`. Use `Decision gate: none` when `Current gate: none`; for an active gate, reset to `Decision: pending` and set `Decision gate` to the exact `Current gate`. CodeV does not infer or reuse an older approval.
 
 ## GitHub CI
 

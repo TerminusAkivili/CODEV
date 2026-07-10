@@ -28,6 +28,9 @@ Required fields:
 - `Execution engine: default|superpower|codex|cursor|custom:<name>`
 - `Current gate: none|gate-id`
 - `Decision: pending|approved|redirected|rejected`
+- `Decision gate: none|gate-id`
+
+Decision gate must exactly match Current gate when a gate is active. State transitions are explicit: a new gate means `Decision: pending` plus the matching `Decision gate`; no gate means `Decision: pending` plus `Decision gate: none`.
 
 Default recommendation: `Gate: normal`, `Ceremony: light`. If the human chooses `ultra`, keep ceremony light unless they request audit detail.
 

@@ -387,6 +387,218 @@ function Copy-CodeVFileForAtomicWrite {
     }
 }
 
+function Write-CodeVPreparedFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        if ($Bytes.Length -gt 0) {
+            $stream.Write($Bytes, 0, $Bytes.Length)
+        }
+        $stream.Flush($true)
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Get-CodeVMetadataSignature {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        return ""
+    }
+
+    $kernel = (& uname -s).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to determine the Unix platform for metadata comparison."
+    }
+
+    if ($kernel -eq "Linux") {
+        $signature = & stat -c "%f|%u|%g" -- $Path 2>&1
+    } elseif ($kernel -eq "Darwin") {
+        $signature = & stat -f "%p|%u|%g" $Path 2>&1
+    } else {
+        throw "Unsupported Unix platform '$kernel' for metadata comparison."
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to read .codev.md metadata: $($signature | Out-String)"
+    }
+
+    return ($signature | Out-String).Trim()
+}
+
+function Get-CodeVFileSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return [pscustomobject]@{
+        Bytes = [System.IO.File]::ReadAllBytes($Path)
+        Metadata = Get-CodeVMetadataSignature -Path $Path
+    }
+}
+
+function Test-CodeVFileSnapshotEqual {
+    param(
+        [Parameter(Mandatory = $true)]$Actual,
+        [Parameter(Mandatory = $true)]$Expected
+    )
+
+    return (
+        (Test-CodeVBytesEqual -Actual $Actual.Bytes -Expected $Expected.Bytes) -and
+        $Actual.Metadata -ceq $Expected.Metadata
+    )
+}
+
+function Restore-CodeVFileSafely {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$CandidatePath,
+        [Parameter(Mandatory = $true)]$ExpectedLiveSnapshot,
+        [int]$MaxAttempts = 8
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    $fileName = [System.IO.Path]::GetFileName($fullPath)
+    $candidate = $CandidatePath
+    $expected = $ExpectedLiveSnapshot
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $candidateSnapshot = Get-CodeVFileSnapshot -Path $candidate
+        $displacedPath = Join-Path $directory (
+            ".$fileName.codev-recovery-" +
+            [guid]::NewGuid().ToString("N") +
+            ".tmp"
+        )
+
+        [System.IO.File]::Replace($candidate, $fullPath, $displacedPath)
+        $displacedSnapshot = Get-CodeVFileSnapshot -Path $displacedPath
+        if (
+            Test-CodeVFileSnapshotEqual `
+                -Actual $displacedSnapshot `
+                -Expected $expected
+        ) {
+            Remove-Item `
+                -LiteralPath $displacedPath `
+                -Force `
+                -ErrorAction SilentlyContinue
+            return
+        }
+
+        $candidate = $displacedPath
+        $expected = $candidateSnapshot
+    }
+
+    throw (
+        "Concurrent state changes did not settle during recovery. " +
+        "Latest recovery retained at '$candidate'."
+    )
+}
+
+function Sync-CodeVUnixMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$MetadataSourcePath,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        return
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    $fileName = [System.IO.Path]::GetFileName($fullPath)
+    $operationId = [guid]::NewGuid().ToString("N")
+    $tempPath = Join-Path $directory ".$fileName.codev-$operationId.metadata.tmp"
+    $displacedPath = Join-Path $directory ".$fileName.codev-$operationId.metadata.bak"
+    $expectedLiveSnapshot = Get-CodeVFileSnapshot -Path $fullPath
+    $candidateSnapshot = $null
+
+    try {
+        Copy-CodeVFileForAtomicWrite `
+            -SourcePath $MetadataSourcePath `
+            -DestinationPath $tempPath
+        Write-CodeVPreparedFile -Path $tempPath -Bytes $Bytes
+        $candidateSnapshot = Get-CodeVFileSnapshot -Path $tempPath
+        [System.IO.File]::Replace($tempPath, $fullPath, $displacedPath)
+    } catch {
+        $syncException = $_.Exception
+        try {
+            Restore-CodeVFileSafely `
+                -Path $fullPath `
+                -CandidatePath $MetadataSourcePath `
+                -ExpectedLiveSnapshot $expectedLiveSnapshot
+        } catch {
+            throw (
+                "Unix metadata synchronization failed and recovery did not complete. " +
+                "Sync error: $($syncException.Message) Recovery error: $($_.Exception.Message)"
+            )
+        }
+        throw $syncException
+    } finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $displacedSnapshot = Get-CodeVFileSnapshot -Path $displacedPath
+    if (
+        -not (
+            Test-CodeVFileSnapshotEqual `
+                -Actual $displacedSnapshot `
+                -Expected $expectedLiveSnapshot
+        )
+    ) {
+        try {
+            Restore-CodeVFileSafely `
+                -Path $fullPath `
+                -CandidatePath $displacedPath `
+                -ExpectedLiveSnapshot $candidateSnapshot
+        } finally {
+            Remove-Item `
+                -LiteralPath $MetadataSourcePath `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+        throw "State changed during approval metadata synchronization."
+    }
+
+    [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($fullPath)
+    Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $Bytes
+    Remove-Item -LiteralPath $displacedPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $MetadataSourcePath -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-CodeVTestDelay {
+    param([Parameter(Mandatory = $true)][string]$EnvironmentVariable)
+
+    $delayText = [System.Environment]::GetEnvironmentVariable($EnvironmentVariable)
+    if ([string]::IsNullOrWhiteSpace($delayText)) {
+        return
+    }
+
+    $delayMilliseconds = 0
+    if (
+        -not [int]::TryParse($delayText, [ref]$delayMilliseconds) -or
+        $delayMilliseconds -lt 0 -or
+        $delayMilliseconds -gt 10000
+    ) {
+        throw "Invalid $EnvironmentVariable value."
+    }
+    Start-Sleep -Milliseconds $delayMilliseconds
+}
+
 function Publish-CodeVBytesAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -400,54 +612,27 @@ function Publish-CodeVBytesAtomically {
     $operationId = [guid]::NewGuid().ToString("N")
     $tempPath = Join-Path $directory ".$fileName.codev-$operationId.tmp"
     $backupPath = Join-Path $directory ".$fileName.codev-$operationId.bak"
-    $failedPath = Join-Path $directory ".$fileName.codev-$operationId.failed"
-    $tempStream = $null
-    $replacementCompleted = $false
+    $publishedSnapshot = $null
 
     try {
         Copy-CodeVFileForAtomicWrite `
             -SourcePath $fullPath `
             -DestinationPath $tempPath
-        $tempStream = [System.IO.File]::Open(
-            $tempPath,
-            [System.IO.FileMode]::Create,
-            [System.IO.FileAccess]::Write,
-            [System.IO.FileShare]::None
-        )
-        if ($Bytes.Length -gt 0) {
-            $tempStream.Write($Bytes, 0, $Bytes.Length)
-        }
-        $tempStream.Flush($true)
-        $tempStream.Dispose()
-        $tempStream = $null
+        Write-CodeVPreparedFile -Path $tempPath -Bytes $Bytes
+        $publishedSnapshot = Get-CodeVFileSnapshot -Path $tempPath
 
-        $testReadyPath = [System.Environment]::GetEnvironmentVariable(
-            "CODEV_TEST_APPROVAL_READY_PATH"
-        )
-        if (-not [string]::IsNullOrWhiteSpace($testReadyPath)) {
-            [System.IO.File]::WriteAllText($testReadyPath, "ready")
-        }
-
-        $testDelayText = [System.Environment]::GetEnvironmentVariable(
-            "CODEV_TEST_APPROVAL_DELAY_MS"
-        )
-        if (-not [string]::IsNullOrWhiteSpace($testDelayText)) {
-            $testDelayMilliseconds = 0
-            if (
-                -not [int]::TryParse(
-                    $testDelayText,
-                    [ref]$testDelayMilliseconds
-                ) -or
-                $testDelayMilliseconds -lt 0 -or
-                $testDelayMilliseconds -gt 10000
-            ) {
-                throw "Invalid CODEV_TEST_APPROVAL_DELAY_MS value."
-            }
-            Start-Sleep -Milliseconds $testDelayMilliseconds
-        }
+        Invoke-CodeVTestDelay -EnvironmentVariable "CODEV_TEST_APPROVAL_DELAY_MS"
 
         [System.IO.File]::Replace($tempPath, $fullPath, $backupPath)
-        $replacementCompleted = $true
+    } catch {
+        throw $_.Exception
+    } finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    try {
         [byte[]]$replacedBytes = [System.IO.File]::ReadAllBytes($backupPath)
         Assert-CodeVBytesEqual `
             -Actual $replacedBytes `
@@ -455,63 +640,32 @@ function Publish-CodeVBytesAtomically {
             -Message "State changed during approval; approval was not recorded."
         [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($fullPath)
         Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $Bytes
-        Remove-Item `
-            -LiteralPath $backupPath `
-            -Force `
-            -ErrorAction SilentlyContinue
     } catch {
         $publishException = $_.Exception
-        if (
-            $replacementCompleted -and
-            (Test-Path -LiteralPath $backupPath -PathType Leaf)
-        ) {
-            $currentBytes = $null
-            try {
-                [byte[]]$currentBytes = [System.IO.File]::ReadAllBytes($fullPath)
-            } catch {
-            }
-
-            if (
-                $null -ne $currentBytes -and
-                (Test-CodeVBytesEqual -Actual $currentBytes -Expected $Bytes)
-            ) {
-                try {
-                    [System.IO.File]::Replace($backupPath, $fullPath, $failedPath)
-                    if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
-                        Remove-Item `
-                            -LiteralPath $failedPath `
-                            -Force `
-                            -ErrorAction SilentlyContinue
-                    }
-                } catch {
-                    throw (
-                        "Atomic approval verification failed and the original state could not be " +
-                        "restored. Backup retained at '$backupPath'. Publish error: " +
-                        "$($publishException.Message) Restore error: $($_.Exception.Message)"
-                    )
-                }
-                throw (
-                    $publishException
-                )
-            }
-
+        try {
+            Invoke-CodeVTestDelay `
+                -EnvironmentVariable "CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"
+            Restore-CodeVFileSafely `
+                -Path $fullPath `
+                -CandidatePath $backupPath `
+                -ExpectedLiveSnapshot $publishedSnapshot
+        } catch {
             throw (
-                "Approval publication was superseded by another state change; the current " +
-                "state was preserved. Backup retained at '$backupPath'. Publish error: " +
-                $publishException.Message
+                "Approval publication failed and recovery did not complete. " +
+                "Publish error: $($publishException.Message) " +
+                "Recovery error: $($_.Exception.Message)"
             )
         }
         throw $publishException
-    } finally {
-        if ($null -ne $tempStream) {
-            $tempStream.Dispose()
-        }
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
-        }
-        if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
-            Remove-Item -LiteralPath $failedPath -Force -ErrorAction SilentlyContinue
-        }
+    }
+
+    Sync-CodeVUnixMetadata `
+        -Path $fullPath `
+        -MetadataSourcePath $backupPath `
+        -Bytes $Bytes
+
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     }
 }
 

@@ -526,6 +526,35 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "approve ignores the obsolete arbitrary ready path environment variable"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-ready-env" `
+            -Decision "pending" `
+            -DecisionGate "gate-ready-env"
+        $victimPath = Join-Path $dir "victim.txt"
+        [System.IO.File]::WriteAllText($victimPath, "keep this content")
+
+        $previousReadyPath = $env:CODEV_TEST_APPROVAL_READY_PATH
+        $env:CODEV_TEST_APPROVAL_READY_PATH = $victimPath
+        try {
+            $result = Run-CodeV `
+                -ProjectRoot $dir `
+                -Command "approve" `
+                -GateId "gate-ready-env"
+        } finally {
+            $env:CODEV_TEST_APPROVAL_READY_PATH = $previousReadyPath
+        }
+
+        $victimContent = [System.IO.File]::ReadAllText($victimPath)
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Equal $victimContent "keep this content" "Victim file content"
+    }
+}
+
+$tests += @{
     Name = "approve rejects a different gate id without changing bytes"
     Run = {
         $dir = New-Fixture
@@ -609,7 +638,6 @@ $tests += @{
             -DecisionGate "gate-race" `
             -IntentLines @("Original intent.")
         $statePath = Join-Path $dir ".codev.md"
-        $readyPath = Join-Path $dir "approval-ready.signal"
         $powerShellExecutable = Get-PowerShellExecutable
         $arguments = @(
             "-NoProfile",
@@ -633,18 +661,25 @@ $tests += @{
         $processInfo.RedirectStandardError = $true
         if ($PSVersionTable.PSEdition -eq "Core") {
             $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-            $processInfo.Environment["CODEV_TEST_APPROVAL_READY_PATH"] = $readyPath
         } else {
             $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_READY_PATH"] = $readyPath
         }
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $null = $process.Start()
 
+        $tempPattern = "." + [System.IO.Path]::GetFileName($statePath) + ".codev-*.tmp"
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        $tempFile = $null
         while ([DateTime]::UtcNow -lt $deadline) {
-            if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+            $tempFile = Get-ChildItem `
+                -LiteralPath $dir `
+                -Filter $tempPattern `
+                -File `
+                -Force `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($null -ne $tempFile) {
                 break
             }
             if ($process.HasExited) {
@@ -653,7 +688,7 @@ $tests += @{
             Start-Sleep -Milliseconds 20
         }
 
-        if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
+        if ($null -eq $tempFile) {
             if (-not $process.HasExited) {
                 $process.Kill()
             }
@@ -703,6 +738,139 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "approval recovery preserves an edit completed during rollback"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-recovery-a" `
+            -Decision "pending" `
+            -DecisionGate "gate-recovery-a" `
+            -IntentLines @("Original recovery intent.")
+        $statePath = Join-Path $dir ".codev.md"
+        $originalText = [System.IO.File]::ReadAllText($statePath)
+        $editB = $originalText.
+            Replace("gate-recovery-a", "gate-recovery-b").
+            Replace("Original recovery intent.", "Recovery edit B.")
+        $editC = $editB.
+            Replace("gate-recovery-b", "gate-recovery-c").
+            Replace("Recovery edit B.", "Recovery edit C.")
+
+        $powerShellExecutable = Get-PowerShellExecutable
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $codevScript,
+            "approve",
+            "-ProjectRoot",
+            $dir,
+            "-GateId",
+            "gate-recovery-a"
+        )
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $powerShellExecutable
+        $processInfo.Arguments = $arguments -join " "
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+            $processInfo.Environment["CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"] = "2000"
+        } else {
+            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"] = "2000"
+        }
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $null = $process.Start()
+
+        $tempPattern = "." + [System.IO.Path]::GetFileName($statePath) + ".codev-*.tmp"
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        $tempFile = $null
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $tempFile = Get-ChildItem `
+                -LiteralPath $dir `
+                -Filter $tempPattern `
+                -File `
+                -Force `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($null -ne $tempFile) {
+                break
+            }
+            if ($process.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+        if ($null -eq $tempFile) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Approval process did not pause before recovery race setup."
+        }
+
+        [System.IO.File]::WriteAllText(
+            $statePath,
+            $editB,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        $approvedStateVisible = $false
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            try {
+                $currentText = [System.IO.File]::ReadAllText($statePath)
+                if ($currentText -like "*Decision: approved*") {
+                    $approvedStateVisible = $true
+                    break
+                }
+            } catch [System.IO.IOException] {
+            }
+            if ($process.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+        if (-not $approvedStateVisible) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Approval process did not reach the recovery delay."
+        }
+
+        [System.IO.File]::WriteAllText(
+            $statePath,
+            $editC,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        $process.WaitForExit()
+        $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+        $exitCode = $process.ExitCode
+        $after = [System.IO.File]::ReadAllText($statePath)
+        $recoveryFiles = Get-ChildItem `
+            -LiteralPath $dir `
+            -Filter "*.codev-recovery-*" `
+            -File `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+        Assert-Equal $exitCode 2 "Exit code"
+        Assert-Contains $output "State changed during approval" "Output"
+        Assert-Contains $after "Current gate: gate-recovery-c" "Latest gate preservation"
+        Assert-Contains $after "Decision gate: gate-recovery-c" "Latest binding preservation"
+        Assert-Contains $after "Recovery edit C." "Latest content preservation"
+        Assert-Equal @($recoveryFiles).Count 0 "Resolved recovery file count"
+    }
+}
+
+$tests += @{
     Name = "approve preserves Unix file permissions"
     Run = {
         if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
@@ -734,6 +902,102 @@ $tests += @{
 
         Assert-Equal $result.ExitCode 0 "Exit code"
         Assert-Equal $mode "600" "Unix state file mode"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves a concurrent Unix permission change"
+    Run = {
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            return
+        }
+
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-mode-race" `
+            -Decision "pending" `
+            -DecisionGate "gate-mode-race"
+        $statePath = Join-Path $dir ".codev.md"
+        & chmod 600 $statePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to set initial Unix fixture permissions."
+        }
+
+        $powerShellExecutable = Get-PowerShellExecutable
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $codevScript,
+            "approve",
+            "-ProjectRoot",
+            $dir,
+            "-GateId",
+            "gate-mode-race"
+        )
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $powerShellExecutable
+        $processInfo.Arguments = $arguments -join " "
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $null = $process.Start()
+
+        $tempPattern = "." + [System.IO.Path]::GetFileName($statePath) + ".codev-*.tmp"
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        $tempFile = $null
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $tempFile = Get-ChildItem `
+                -LiteralPath $dir `
+                -Filter $tempPattern `
+                -File `
+                -Force `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($null -ne $tempFile) {
+                break
+            }
+            if ($process.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+        if ($null -eq $tempFile) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Approval process did not pause before Unix metadata publication."
+        }
+
+        & chmod 640 $statePath
+        if ($LASTEXITCODE -ne 0) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Unable to apply concurrent Unix fixture permissions."
+        }
+
+        $process.WaitForExit()
+        $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+        $exitCode = $process.ExitCode
+        $kernel = (& uname -s).Trim()
+        if ($kernel -eq "Darwin") {
+            $mode = (& stat -f "%Lp" $statePath).Trim()
+        } else {
+            $mode = (& stat -c "%a" $statePath).Trim()
+        }
+
+        Assert-Equal $exitCode 0 "Exit code"
+        Assert-Contains $output "Human approval recorded for gate gate-mode-race." "Output"
+        Assert-Equal $mode "640" "Concurrent Unix state file mode"
     }
 }
 

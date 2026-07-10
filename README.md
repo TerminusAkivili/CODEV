@@ -245,7 +245,7 @@ Gate boundaries are product validation boundaries, not paperwork boundaries. Do 
 | `standard` | Update `.codev.md` with shape, trace, and gate |
 | `audit` | Split docs only when risk or project size justifies it |
 
-Recommended default: `ultra + light`. Stop often, write little.
+Recommended default: `normal + light`. Stop at demonstrable functionality batches and keep the review lightweight.
 
 ## Skills
 

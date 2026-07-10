@@ -178,6 +178,30 @@ function Assert-Utf8WithoutBom {
     $null = $strictUtf8.GetString($Bytes)
 }
 
+function Get-EncodedBytes {
+    param(
+        [string]$Text,
+        [Parameter(Mandatory = $true)][System.Text.Encoding]$Encoding,
+        [switch]$IncludePreamble
+    )
+
+    [byte[]]$body = $Encoding.GetBytes($Text)
+    [byte[]]$preamble = @()
+    if ($IncludePreamble) {
+        $preamble = $Encoding.GetPreamble()
+    }
+
+    [byte[]]$bytes = New-Object byte[] ($preamble.Length + $body.Length)
+    if ($preamble.Length -gt 0) {
+        [System.Array]::Copy($preamble, 0, $bytes, 0, $preamble.Length)
+    }
+    if ($body.Length -gt 0) {
+        [System.Array]::Copy($body, 0, $bytes, $preamble.Length, $body.Length)
+    }
+
+    return $bytes
+}
+
 $tests = @()
 
 $tests += @{
@@ -402,6 +426,31 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "approve fails without modification while the state file is exclusively locked"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-locked" -Decision "pending" -DecisionGate "gate-locked"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+        $lock = [System.IO.File]::Open(
+            $statePath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        try {
+            $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-locked"
+        } finally {
+            $lock.Dispose()
+        }
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-ByteSequenceEqual $after $before "Locked approval must not change the state file."
+    }
+}
+
+$tests += @{
     Name = "approve updates only approval metadata and preserves CRLF document content"
     Run = {
         $dir = New-Fixture
@@ -433,9 +482,6 @@ $tests += @{
         $expectedText = $beforeText.Replace(
             "Decision: rejected$newline",
             "Decision: approved$newline"
-        ).Replace(
-            "Decision gate :   Gate-Exact   $newline",
-            "Decision gate: Gate-Exact$newline"
         )
 
         Assert-Equal $result.ExitCode 0 "Exit code"
@@ -446,6 +492,133 @@ $tests += @{
         Assert-Contains $afterText "## Trace${newline}Keep trace text." "Trace preservation"
         Assert-Contains $afterText "Unrelated preamble: keep exactly" "Unrelated text preservation"
         Assert-Equal ([regex]::Matches($afterText, "(?<!`r)`n").Count) 0 "CRLF newline preservation"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves exact mixed newline bytes outside metadata values"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $beforeText = (
+            "# CO-DEV`r`n" +
+            "`n" +
+            "Gate: strict`r`n" +
+            "Ceremony: audit`n" +
+            "Execution engine: custom:runner`r`n" +
+            "Current gate: gate-mixed`n" +
+            "Decision: rejected`r`n" +
+            "Decision gate :   gate-mixed   `n" +
+            "Unrelated preamble: keep exactly`r`n" +
+            "`n" +
+            "## Intent`r`n" +
+            "Keep intent text.`n" +
+            "## Shape`r`n" +
+            "Keep shape text.`n" +
+            "## Trace`r`n" +
+            "Keep trace text."
+        )
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $beforeText -Encoding $utf8NoBom
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        $expectedText = $beforeText.Replace("Decision: rejected", "Decision: approved")
+        [byte[]]$expected = Get-EncodedBytes -Text $expectedText -Encoding $utf8NoBom
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-mixed"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval recorded for gate gate-mixed." "Output"
+        Assert-ByteSequenceEqual $after $expected "Mixed newline and non-field bytes must remain exact."
+    }
+}
+
+$tests += @{
+    Name = "approve preserves UTF-8 BOM and exact encoded content"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $text = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: gate-utf8-bom",
+            "Decision: pending",
+            "Decision gate: gate-utf8-bom",
+            "",
+            "## Intent",
+            "Keep BOM content."
+        ) -join "`r`n"
+        $utf8Bom = [System.Text.UTF8Encoding]::new($true, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $text -Encoding $utf8Bom -IncludePreamble
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        [byte[]]$expected = Get-EncodedBytes `
+            -Text $text.Replace("Decision: pending", "Decision: approved") `
+            -Encoding $utf8Bom `
+            -IncludePreamble
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-utf8-bom"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-ByteSequenceEqual $after $expected "UTF-8 BOM and encoded content must be preserved."
+    }
+}
+
+$tests += @{
+    Name = "approve preserves UTF-16LE BOM and exact encoded content"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $unicodeText = "Keep snowman $([char]0x2603)."
+        $text = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: gate-utf16",
+            "Decision: rejected",
+            "Decision gate: gate-utf16",
+            "",
+            "## Intent",
+            $unicodeText
+        ) -join "`n"
+        $utf16Le = [System.Text.UnicodeEncoding]::new($false, $true, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $text -Encoding $utf16Le -IncludePreamble
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        [byte[]]$expected = Get-EncodedBytes `
+            -Text $text.Replace("Decision: rejected", "Decision: approved") `
+            -Encoding $utf16Le `
+            -IncludePreamble
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-utf16"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-ByteSequenceEqual $after $expected "UTF-16LE BOM and encoded content must be preserved."
+    }
+}
+
+$tests += @{
+    Name = "approve rejects undecodable unmarked bytes without modification"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-invalid-bytes" -Decision "pending" -DecisionGate "gate-invalid-bytes"
+        $statePath = Join-Path $dir ".codev.md"
+        [byte[]]$validBytes = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$before = New-Object byte[] ($validBytes.Length + 1)
+        [System.Array]::Copy($validBytes, $before, $validBytes.Length)
+        $before[$before.Length - 1] = 0xFF
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-invalid-bytes"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-ByteSequenceEqual $after $before "Undecodable unmarked bytes must not be rewritten."
     }
 }
 

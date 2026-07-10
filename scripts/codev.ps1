@@ -24,19 +24,12 @@ function Get-CanonicalFieldName {
     }
 }
 
-function Read-CodeVDocument {
-    param([Parameter(Mandatory = $true)][string]$Path)
+function ConvertFrom-CodeVText {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
 
-    $text = [System.IO.File]::ReadAllText($Path)
-    $newlineMatch = [regex]::Match($text, "\r\n|\n|\r")
-    if ($newlineMatch.Success) {
-        $newline = $newlineMatch.Value
-    } else {
-        $newline = [Environment]::NewLine
-    }
-
-    $hasTrailingNewline = [regex]::IsMatch($text, "(\r\n|\n|\r)$")
-    $lines = [regex]::Split($text, "\r\n|\n|\r")
     $fieldNames = @(
         "Gate",
         "Ceremony",
@@ -50,11 +43,20 @@ function Read-CodeVDocument {
         $occurrences[$fieldName] = @()
     }
 
-    $metadataEndIndex = $lines.Count
-    for ($index = 0; $index -lt $lines.Count; $index++) {
-        $line = $lines[$index]
+    $lineIndex = 0
+    $lineStart = 0
+    while ($lineStart -lt $Text.Length) {
+        $lineEnd = $lineStart
+        while (
+            $lineEnd -lt $Text.Length -and
+            $Text[$lineEnd] -ne "`r" -and
+            $Text[$lineEnd] -ne "`n"
+        ) {
+            $lineEnd++
+        }
+
+        $line = $Text.Substring($lineStart, $lineEnd - $lineStart)
         if ($line -cmatch "^##\s") {
-            $metadataEndIndex = $index
             break
         }
 
@@ -63,15 +65,30 @@ function Read-CodeVDocument {
             "^\s*(Decision gate|Execution engine|Current gate|Ceremony|Decision|Gate)\s*:\s*(.*?)\s*$",
             [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
         )
-        if (-not $match.Success) {
-            continue
+        if ($match.Success) {
+            $canonicalName = Get-CanonicalFieldName -Name $match.Groups[1].Value
+            $occurrences[$canonicalName] += [pscustomobject]@{
+                LineIndex = $lineIndex
+                Value = $match.Groups[2].Value.Trim()
+                ValueStart = $lineStart + $match.Groups[2].Index
+                ValueLength = $match.Groups[2].Length
+            }
         }
 
-        $canonicalName = Get-CanonicalFieldName -Name $match.Groups[1].Value
-        $occurrences[$canonicalName] += [pscustomobject]@{
-            LineIndex = $index
-            Value = $match.Groups[2].Value.Trim()
+        if ($lineEnd -ge $Text.Length) {
+            break
         }
+
+        if (
+            $Text[$lineEnd] -eq "`r" -and
+            ($lineEnd + 1) -lt $Text.Length -and
+            $Text[$lineEnd + 1] -eq "`n"
+        ) {
+            $lineStart = $lineEnd + 2
+        } else {
+            $lineStart = $lineEnd + 1
+        }
+        $lineIndex++
     }
 
     foreach ($fieldName in $fieldNames) {
@@ -88,14 +105,19 @@ function Read-CodeVDocument {
         $fieldLines[$fieldName] = $occurrences[$fieldName][0].LineIndex
     }
 
+    $fieldLocations = @{}
+    foreach ($fieldName in $fieldNames) {
+        $fieldLocations[$fieldName] = [pscustomobject]@{
+            Start = $occurrences[$fieldName][0].ValueStart
+            Length = $occurrences[$fieldName][0].ValueLength
+        }
+    }
+
     return [pscustomobject]@{
         Path = $Path
-        Text = $text
-        Lines = $lines
-        NewLine = $newline
-        HasTrailingNewLine = $hasTrailingNewline
-        MetadataEndIndex = $metadataEndIndex
+        Text = $Text
         FieldLines = $fieldLines
+        FieldLocations = $fieldLocations
         State = [pscustomobject]@{
             Gate = $occurrences["Gate"][0].Value
             Ceremony = $occurrences["Ceremony"][0].Value
@@ -103,6 +125,165 @@ function Read-CodeVDocument {
             CurrentGate = $occurrences["Current gate"][0].Value
             Decision = $occurrences["Decision"][0].Value
             DecisionGate = $occurrences["Decision gate"][0].Value
+        }
+    }
+}
+
+function Read-CodeVDocument {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $text = [System.IO.File]::ReadAllText($Path)
+    return ConvertFrom-CodeVText -Text $text -Path $Path
+}
+
+function Test-CodeVBytePrefix {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][byte[]]$Prefix
+    )
+
+    if ($Bytes.Length -lt $Prefix.Length) {
+        return $false
+    }
+
+    for ($index = 0; $index -lt $Prefix.Length; $index++) {
+        if ($Bytes[$index] -ne $Prefix[$index]) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function ConvertFrom-CodeVBytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $encoding = $null
+    $preambleLength = 0
+    $encodingName = $null
+
+    if (Test-CodeVBytePrefix -Bytes $Bytes -Prefix ([byte[]]@(0xFF, 0xFE, 0x00, 0x00))) {
+        $encoding = [System.Text.UTF32Encoding]::new($false, $true, $true)
+        $preambleLength = 4
+        $encodingName = "UTF-32LE"
+    } elseif (Test-CodeVBytePrefix -Bytes $Bytes -Prefix ([byte[]]@(0x00, 0x00, 0xFE, 0xFF))) {
+        $encoding = [System.Text.UTF32Encoding]::new($true, $true, $true)
+        $preambleLength = 4
+        $encodingName = "UTF-32BE"
+    } elseif (Test-CodeVBytePrefix -Bytes $Bytes -Prefix ([byte[]]@(0xEF, 0xBB, 0xBF))) {
+        $encoding = [System.Text.UTF8Encoding]::new($true, $true)
+        $preambleLength = 3
+        $encodingName = "UTF-8 with BOM"
+    } elseif (Test-CodeVBytePrefix -Bytes $Bytes -Prefix ([byte[]]@(0xFF, 0xFE))) {
+        $encoding = [System.Text.UnicodeEncoding]::new($false, $true, $true)
+        $preambleLength = 2
+        $encodingName = "UTF-16LE"
+    } elseif (Test-CodeVBytePrefix -Bytes $Bytes -Prefix ([byte[]]@(0xFE, 0xFF))) {
+        $encoding = [System.Text.UnicodeEncoding]::new($true, $true, $true)
+        $preambleLength = 2
+        $encodingName = "UTF-16BE"
+    } else {
+        $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+        $encodingName = "UTF-8 without BOM"
+    }
+
+    try {
+        $text = $encoding.GetString($Bytes, $preambleLength, $Bytes.Length - $preambleLength)
+    } catch {
+        throw "Unable to decode .codev.md as $encodingName."
+    }
+
+    [byte[]]$preamble = New-Object byte[] $preambleLength
+    if ($preambleLength -gt 0) {
+        [System.Array]::Copy($Bytes, 0, $preamble, 0, $preambleLength)
+    }
+
+    return [pscustomobject]@{
+        Text = $text
+        Encoding = $encoding
+        EncodingName = $encodingName
+        Preamble = $preamble
+    }
+}
+
+function ConvertTo-CodeVBytes {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)]$EncodingInfo
+    )
+
+    [byte[]]$body = $EncodingInfo.Encoding.GetBytes($Text)
+    [byte[]]$bytes = New-Object byte[] ($EncodingInfo.Preamble.Length + $body.Length)
+    if ($EncodingInfo.Preamble.Length -gt 0) {
+        [System.Array]::Copy(
+            $EncodingInfo.Preamble,
+            0,
+            $bytes,
+            0,
+            $EncodingInfo.Preamble.Length
+        )
+    }
+    if ($body.Length -gt 0) {
+        [System.Array]::Copy(
+            $body,
+            0,
+            $bytes,
+            $EncodingInfo.Preamble.Length,
+            $body.Length
+        )
+    }
+
+    return $bytes
+}
+
+function Read-CodeVStreamBytes {
+    param([Parameter(Mandatory = $true)][System.IO.FileStream]$Stream)
+
+    if ($Stream.Length -gt [int]::MaxValue) {
+        throw ".codev.md is too large to process."
+    }
+
+    [byte[]]$bytes = New-Object byte[] ([int]$Stream.Length)
+    $Stream.Position = 0
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+        $read = $Stream.Read($bytes, $offset, $bytes.Length - $offset)
+        if ($read -eq 0) {
+            throw "Unexpected end of .codev.md while reading."
+        }
+        $offset += $read
+    }
+
+    return $bytes
+}
+
+function Write-CodeVStreamBytes {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $Stream.Position = 0
+    $Stream.SetLength(0)
+    if ($Bytes.Length -gt 0) {
+        $Stream.Write($Bytes, 0, $Bytes.Length)
+    }
+    $Stream.Flush($true)
+}
+
+function Assert-CodeVBytesEqual {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Actual,
+        [Parameter(Mandatory = $true)][byte[]]$Expected
+    )
+
+    if ($Actual.Length -ne $Expected.Length) {
+        throw "Approval write verification failed."
+    }
+
+    for ($index = 0; $index -lt $Expected.Length; $index++) {
+        if ($Actual[$index] -ne $Expected[$index]) {
+            throw "Approval write verification failed."
         }
     }
 }
@@ -196,53 +377,92 @@ function Set-CodeVField {
         [Parameter(Mandatory = $true)][string]$Value
     )
 
-    if (-not $Document.FieldLines.ContainsKey($Name)) {
+    if (-not $Document.FieldLocations.ContainsKey($Name)) {
         throw "Unknown CO-DEV field '$Name'."
     }
 
-    $lineIndex = $Document.FieldLines[$Name]
-    if ($lineIndex -ge $Document.MetadataEndIndex) {
-        throw "Cannot update '$Name' outside the metadata preamble."
-    }
-
-    $Document.Lines[$lineIndex] = "${Name}: $Value"
+    $location = $Document.FieldLocations[$Name]
+    return $Document.Text.Remove($location.Start, $location.Length).Insert($location.Start, $Value)
 }
 
-function Write-CodeVDocument {
-    param([Parameter(Mandatory = $true)]$Document)
+function Invoke-CodeVApprove {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$GateId
+    )
 
-    $lines = @($Document.Lines)
-    if (
-        $Document.HasTrailingNewLine -and
-        $lines.Count -gt 0 -and
-        $lines[$lines.Count - 1] -eq ""
-    ) {
-        if ($lines.Count -eq 1) {
-            $lines = @()
-        } else {
-            $lines = @($lines[0..($lines.Count - 2)])
-        }
-    }
-
-    $text = $lines -join $Document.NewLine
-    if ($Document.HasTrailingNewLine) {
-        $text += $Document.NewLine
-    }
-
-    $directory = Split-Path -Parent $Document.Path
-    $temporaryPath = Join-Path $directory (".codev-" + [guid]::NewGuid().ToString("N") + ".tmp")
-    $backupPath = Join-Path $directory (".codev-" + [guid]::NewGuid().ToString("N") + ".bak")
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-
+    $stream = $null
     try {
-        [System.IO.File]::WriteAllText($temporaryPath, $text, $utf8NoBom)
-        [System.IO.File]::Replace($temporaryPath, $Document.Path, $backupPath)
-    } finally {
-        if (Test-Path -LiteralPath $temporaryPath) {
-            Remove-Item -LiteralPath $temporaryPath -Force
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+
+        [byte[]]$originalBytes = Read-CodeVStreamBytes -Stream $stream
+        $encodingInfo = ConvertFrom-CodeVBytes -Bytes $originalBytes
+        $document = ConvertFrom-CodeVText -Text $encodingInfo.Text -Path $Path
+        $state = Assert-CodeVState -Document $document
+
+        if ($state.CurrentGate -ieq "none") {
+            throw "Current gate is 'none'; there is no active gate to approve."
         }
-        if (Test-Path -LiteralPath $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force
+        if ([string]::IsNullOrWhiteSpace($GateId)) {
+            throw "GateId is required for approve."
+        }
+        if ($GateId -cne $state.CurrentGate) {
+            throw "GateId '$GateId' does not exactly match Current gate '$($state.CurrentGate)'."
+        }
+
+        $updatedText = Set-CodeVField -Document $document -Name "Decision" -Value "approved"
+        $updatedDocument = ConvertFrom-CodeVText -Text $updatedText -Path $Path
+        $updatedText = Set-CodeVField `
+            -Document $updatedDocument `
+            -Name "Decision gate" `
+            -Value $state.CurrentGate
+        $updatedDocument = ConvertFrom-CodeVText -Text $updatedText -Path $Path
+        $updatedState = Assert-CodeVState -Document $updatedDocument
+        if ($updatedState.Decision -cne "approved") {
+            throw "Approval update did not prepare Decision: approved."
+        }
+        if ($updatedState.DecisionGate -cne $state.CurrentGate) {
+            throw "Approval update did not prepare the exact current gate."
+        }
+
+        [byte[]]$updatedBytes = ConvertTo-CodeVBytes `
+            -Text $updatedText `
+            -EncodingInfo $encodingInfo
+
+        try {
+            Write-CodeVStreamBytes -Stream $stream -Bytes $updatedBytes
+
+            [byte[]]$persistedBytes = Read-CodeVStreamBytes -Stream $stream
+            Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $updatedBytes
+            $persistedEncodingInfo = ConvertFrom-CodeVBytes -Bytes $persistedBytes
+            $persistedDocument = ConvertFrom-CodeVText `
+                -Text $persistedEncodingInfo.Text `
+                -Path $Path
+            $persistedState = Assert-CodeVState -Document $persistedDocument
+            if ($persistedState.Decision -cne "approved") {
+                throw "Approval write did not persist Decision: approved."
+            }
+            if ($persistedState.DecisionGate -cne $state.CurrentGate) {
+                throw "Approval write did not persist the exact current gate."
+            }
+        } catch {
+            $writeException = $_.Exception
+            try {
+                Write-CodeVStreamBytes -Stream $stream -Bytes $originalBytes
+            } catch {
+            }
+            throw $writeException
+        }
+
+        return $state.CurrentGate
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
         }
     }
 }
@@ -299,9 +519,14 @@ try {
         exit 2
     }
 
+    if ($Command -ceq "approve") {
+        $approvedGate = Invoke-CodeVApprove -Path $StatePath -GateId $GateId
+        Write-Output "Human approval recorded for gate $approvedGate."
+        exit 0
+    }
+
     $document = Read-CodeVDocument -Path $StatePath
     $state = Assert-CodeVState -Document $document
-
     switch ($Command) {
         "check" {
             $checkResult = Invoke-CodeVCheck -State $state
@@ -310,33 +535,6 @@ try {
         }
         "status" {
             Write-CodeVStatus -State $state
-            exit 0
-        }
-        "approve" {
-            if ($state.CurrentGate -ieq "none") {
-                throw "Current gate is 'none'; there is no active gate to approve."
-            }
-            if ([string]::IsNullOrWhiteSpace($GateId)) {
-                throw "GateId is required for approve."
-            }
-            if ($GateId -cne $state.CurrentGate) {
-                throw "GateId '$GateId' does not exactly match Current gate '$($state.CurrentGate)'."
-            }
-
-            Set-CodeVField -Document $document -Name "Decision" -Value "approved"
-            Set-CodeVField -Document $document -Name "Decision gate" -Value $state.CurrentGate
-            Write-CodeVDocument -Document $document
-
-            $approvedDocument = Read-CodeVDocument -Path $StatePath
-            $approvedState = Assert-CodeVState -Document $approvedDocument
-            if ($approvedState.Decision -cne "approved") {
-                throw "Approval write did not persist Decision: approved."
-            }
-            if ($approvedState.DecisionGate -cne $state.CurrentGate) {
-                throw "Approval write did not persist the exact current gate."
-            }
-
-            Write-Output "Human approval recorded for gate $($state.CurrentGate)."
             exit 0
         }
     }

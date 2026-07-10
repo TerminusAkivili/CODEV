@@ -189,6 +189,64 @@ function Assert-CodeVState {
     }
 }
 
+function Set-CodeVField {
+    param(
+        [Parameter(Mandatory = $true)]$Document,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    if (-not $Document.FieldLines.ContainsKey($Name)) {
+        throw "Unknown CO-DEV field '$Name'."
+    }
+
+    $lineIndex = $Document.FieldLines[$Name]
+    if ($lineIndex -ge $Document.MetadataEndIndex) {
+        throw "Cannot update '$Name' outside the metadata preamble."
+    }
+
+    $Document.Lines[$lineIndex] = "${Name}: $Value"
+}
+
+function Write-CodeVDocument {
+    param([Parameter(Mandatory = $true)]$Document)
+
+    $lines = @($Document.Lines)
+    if (
+        $Document.HasTrailingNewLine -and
+        $lines.Count -gt 0 -and
+        $lines[$lines.Count - 1] -eq ""
+    ) {
+        if ($lines.Count -eq 1) {
+            $lines = @()
+        } else {
+            $lines = @($lines[0..($lines.Count - 2)])
+        }
+    }
+
+    $text = $lines -join $Document.NewLine
+    if ($Document.HasTrailingNewLine) {
+        $text += $Document.NewLine
+    }
+
+    $directory = Split-Path -Parent $Document.Path
+    $temporaryPath = Join-Path $directory (".codev-" + [guid]::NewGuid().ToString("N") + ".tmp")
+    $backupPath = Join-Path $directory (".codev-" + [guid]::NewGuid().ToString("N") + ".bak")
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $text, $utf8NoBom)
+        [System.IO.File]::Replace($temporaryPath, $Document.Path, $backupPath)
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $backupPath) {
+            Remove-Item -LiteralPath $backupPath -Force
+        }
+    }
+}
+
 function Invoke-CodeVCheck {
     param([Parameter(Mandatory = $true)]$State)
 
@@ -255,8 +313,31 @@ try {
             exit 0
         }
         "approve" {
-            Write-Output "The approve command is not implemented yet."
-            exit 2
+            if ($state.CurrentGate -ieq "none") {
+                throw "Current gate is 'none'; there is no active gate to approve."
+            }
+            if ([string]::IsNullOrWhiteSpace($GateId)) {
+                throw "GateId is required for approve."
+            }
+            if ($GateId -cne $state.CurrentGate) {
+                throw "GateId '$GateId' does not exactly match Current gate '$($state.CurrentGate)'."
+            }
+
+            Set-CodeVField -Document $document -Name "Decision" -Value "approved"
+            Set-CodeVField -Document $document -Name "Decision gate" -Value $state.CurrentGate
+            Write-CodeVDocument -Document $document
+
+            $approvedDocument = Read-CodeVDocument -Path $StatePath
+            $approvedState = Assert-CodeVState -Document $approvedDocument
+            if ($approvedState.Decision -cne "approved") {
+                throw "Approval write did not persist Decision: approved."
+            }
+            if ($approvedState.DecisionGate -cne $state.CurrentGate) {
+                throw "Approval write did not persist the exact current gate."
+            }
+
+            Write-Output "Human approval recorded for gate $($state.CurrentGate)."
+            exit 0
         }
     }
 } catch {

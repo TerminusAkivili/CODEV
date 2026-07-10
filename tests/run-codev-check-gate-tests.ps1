@@ -40,8 +40,10 @@ function Invoke-PowerShellChild {
 function Run-CodeV {
     param(
         [string]$ProjectRoot,
-        [ValidateSet("check", "status")]
-        [string]$Command = "check"
+        [ValidateSet("check", "status", "approve")]
+        [string]$Command = "check",
+        [AllowEmptyString()]
+        [string]$GateId
     )
 
     $arguments = @(
@@ -54,6 +56,9 @@ function Run-CodeV {
         "-ProjectRoot",
         $ProjectRoot
     )
+    if ($PSBoundParameters.ContainsKey("GateId")) {
+        $arguments += @("-GateId", $GateId)
+    }
 
     return Invoke-PowerShellChild -Arguments $arguments
 }
@@ -92,7 +97,10 @@ function Write-State {
         [switch]$OmitGate,
         [switch]$OmitDecisionGate,
         [string[]]$AdditionalPreambleLines = @(),
-        [string[]]$IntentLines = @("Fixture.")
+        [string[]]$IntentLines = @("Fixture."),
+        [string]$FirstHeading = "## Intent",
+        [string]$NewLine = "`r`n",
+        [bool]$TrailingNewLine = $true
     )
 
     $lines = @("# CO-DEV", "")
@@ -108,11 +116,15 @@ function Write-State {
     }
     $lines += $AdditionalPreambleLines
     $lines += ""
-    $lines += "## Intent"
+    $lines += $FirstHeading
     $lines += $IntentLines
 
-    $content = ($lines -join "`r`n") + "`r`n"
-    [System.IO.File]::WriteAllText((Join-Path $ProjectRoot ".codev.md"), $content)
+    $content = $lines -join $NewLine
+    if ($TrailingNewLine) {
+        $content += $NewLine
+    }
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText((Join-Path $ProjectRoot ".codev.md"), $content, $utf8NoBom)
 }
 
 function Assert-Equal {
@@ -134,6 +146,36 @@ function Assert-NotContains {
     if ($Text -like "*$Needle*") {
         throw "$Message Unexpected '$Needle' in: $Text"
     }
+}
+
+function Assert-ByteSequenceEqual {
+    param([byte[]]$Actual, [byte[]]$Expected, [string]$Message)
+
+    if ($Actual.Length -ne $Expected.Length) {
+        throw "$Message Byte lengths differ. Expected $($Expected.Length) but got $($Actual.Length)."
+    }
+
+    for ($index = 0; $index -lt $Expected.Length; $index++) {
+        if ($Actual[$index] -ne $Expected[$index]) {
+            throw "$Message Byte mismatch at index $index. Expected $($Expected[$index]) but got $($Actual[$index])."
+        }
+    }
+}
+
+function Assert-Utf8WithoutBom {
+    param([byte[]]$Bytes, [string]$Message)
+
+    if (
+        $Bytes.Length -ge 3 -and
+        $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and
+        $Bytes[2] -eq 0xBF
+    ) {
+        throw "$Message UTF-8 BOM was present."
+    }
+
+    $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    $null = $strictUtf8.GetString($Bytes)
 }
 
 $tests = @()
@@ -272,17 +314,19 @@ $tests += @{
 }
 
 $tests += @{
-    Name = "metadata fields after intent heading are ignored"
+    Name = "metadata fields after any level-two heading are ignored"
     Run = {
         $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Decision "approved" -IntentLines @(
+        Write-State -ProjectRoot $dir -Decision "approved" -FirstHeading "## Shape" -IntentLines @(
             "Fixture.",
             "Gate: nonsense",
             "Ceremony: nonsense",
             "Execution engine: nonsense",
             "Current gate: gate-other",
             "Decision: rejected",
-            "Decision gate: gate-other"
+            "Decision gate: gate-other",
+            "## Trace",
+            "Decision: redirected"
         )
         $result = Run-CodeV -ProjectRoot $dir -Command "status"
         Assert-Equal $result.ExitCode 0 "Exit code"
@@ -290,6 +334,150 @@ $tests += @{
         Assert-Contains $result.Output "Decision: approved" "Decision output"
         Assert-NotContains $result.Output "Gate: nonsense" "Preamble isolation"
         Assert-NotContains $result.Output "gate-other" "Preamble isolation"
+    }
+}
+
+$tests += @{
+    Name = "approve requires a gate id"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-required" -Decision "pending" -DecisionGate "gate-required"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "GateId is required for approve" "Output"
+        Assert-ByteSequenceEqual $after $before "Missing GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve rejects a different gate id without changing bytes"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-current" -Decision "pending" -DecisionGate "gate-current"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-other"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "GateId 'gate-other' does not exactly match Current gate 'gate-current'" "Output"
+        Assert-ByteSequenceEqual $after $before "Mismatched GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve gate id comparison is case sensitive and preserves bytes"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-alpha" -Decision "pending" -DecisionGate "gate-alpha"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "Gate-Alpha"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "GateId 'Gate-Alpha' does not exactly match Current gate 'gate-alpha'" "Output"
+        Assert-ByteSequenceEqual $after $before "Case-mismatched GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve cannot record a decision when current gate is none"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "none" -Decision "pending" -DecisionGate "none"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve"
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Current gate is 'none'; there is no active gate to approve" "Output"
+        Assert-ByteSequenceEqual $after $before "No-active-gate approval must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve updates only approval metadata and preserves CRLF document content"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $newline = "`r`n"
+        $beforeText = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: Gate-Exact",
+            "Decision: rejected",
+            "Decision gate :   Gate-Exact   ",
+            "Unrelated preamble: keep exactly",
+            "",
+            "## Intent",
+            "Keep intent text.",
+            "## Shape",
+            "Keep shape text.",
+            "## Trace",
+            "Keep trace text."
+        ) -join $newline
+        $beforeText += $newline
+        [System.IO.File]::WriteAllText($statePath, $beforeText, [System.Text.UTF8Encoding]::new($false))
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "Gate-Exact"
+        $afterText = [System.IO.File]::ReadAllText($statePath)
+        $expectedText = $beforeText.Replace(
+            "Decision: rejected$newline",
+            "Decision: approved$newline"
+        ).Replace(
+            "Decision gate :   Gate-Exact   $newline",
+            "Decision gate: Gate-Exact$newline"
+        )
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval recorded for gate Gate-Exact." "Output"
+        Assert-Equal $afterText $expectedText "Only Decision and Decision gate lines should change."
+        Assert-Contains $afterText "## Intent${newline}Keep intent text." "Intent preservation"
+        Assert-Contains $afterText "## Shape${newline}Keep shape text." "Shape preservation"
+        Assert-Contains $afterText "## Trace${newline}Keep trace text." "Trace preservation"
+        Assert-Contains $afterText "Unrelated preamble: keep exactly" "Unrelated text preservation"
+        Assert-Equal ([regex]::Matches($afterText, "(?<!`r)`n").Count) 0 "CRLF newline preservation"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves LF without trailing newline and writes UTF-8 without BOM"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $unicodeText = "caf$([char]0x00E9)"
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-lf" `
+            -Decision "pending" `
+            -DecisionGate "gate-lf" `
+            -AdditionalPreambleLines @("Unrelated: $unicodeText") `
+            -IntentLines @("Keep $unicodeText.") `
+            -NewLine "`n" `
+            -TrailingNewLine $false
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-lf"
+        $bytes = [System.IO.File]::ReadAllBytes($statePath)
+        $afterText = [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval recorded for gate gate-lf." "Output"
+        Assert-Contains $afterText "Decision: approved" "Decision update"
+        Assert-Contains $afterText "Decision gate: gate-lf" "Decision gate update"
+        Assert-Contains $afterText "Unrelated: $unicodeText" "UTF-8 unrelated text preservation"
+        Assert-Contains $afterText "Keep $unicodeText." "UTF-8 body preservation"
+        Assert-Equal $afterText.Contains("`r") $false "LF newline preservation"
+        Assert-Equal $afterText.EndsWith("`n") $false "Trailing newline preservation"
+        Assert-Utf8WithoutBom $bytes "Approved state file"
     }
 }
 

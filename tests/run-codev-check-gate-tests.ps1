@@ -433,6 +433,25 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "gate enum comparison is ordinal"
+    Run = {
+        $dir = New-Fixture
+        $softHyphen = [char]0x00AD
+        $invalidGate = "fr${softHyphen}ee"
+        Write-State `
+            -ProjectRoot $dir `
+            -Gate $invalidGate `
+            -CurrentGate "gate-invalid-enum" `
+            -Decision "pending" `
+            -DecisionGate "gate-invalid-enum"
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Gate '$invalidGate'" "Output"
+    }
+}
+
+$tests += @{
     Name = "invalid ceremony is rejected"
     Run = {
         $dir = New-Fixture
@@ -440,6 +459,23 @@ $tests += @{
         $result = Run-CodeV -ProjectRoot $dir
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-Contains $result.Output "Invalid Ceremony 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "ceremony enum comparison is ordinal"
+    Run = {
+        $dir = New-Fixture
+        $softHyphen = [char]0x00AD
+        $invalidCeremony = "li${softHyphen}ght"
+        Write-State -ProjectRoot $dir -Ceremony $invalidCeremony
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Invalid Ceremony '$invalidCeremony'" `
+            "Output"
     }
 }
 
@@ -455,6 +491,23 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "execution engine enum comparison is ordinal"
+    Run = {
+        $dir = New-Fixture
+        $softHyphen = [char]0x00AD
+        $invalidEngine = "co${softHyphen}dex"
+        Write-State -ProjectRoot $dir -ExecutionEngine $invalidEngine
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Invalid Execution engine '$invalidEngine'" `
+            "Output"
+    }
+}
+
+$tests += @{
     Name = "invalid decision is rejected"
     Run = {
         $dir = New-Fixture
@@ -462,6 +515,24 @@ $tests += @{
         $result = Run-CodeV -ProjectRoot $dir
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-Contains $result.Output "Invalid Decision 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "decision enum comparison is ordinal"
+    Run = {
+        $dir = New-Fixture
+        $softHyphen = [char]0x00AD
+        $invalidDecision = "app${softHyphen}roved"
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-invalid-decision-enum" `
+            -Decision $invalidDecision `
+            -DecisionGate "gate-invalid-decision-enum"
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Decision '$invalidDecision'" "Output"
     }
 }
 

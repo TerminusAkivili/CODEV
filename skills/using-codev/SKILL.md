@@ -32,6 +32,8 @@ Required fields:
 
 Decision gate must exactly match Current gate when a gate is active. Gate identifiers use ordinal, case-sensitive comparison without Unicode normalization, and the reserved no-gate sentinel is exactly lowercase `none`. State transitions are explicit: a new gate means `Decision: pending` plus the matching `Decision gate`; no gate means `Decision: pending` plus `Decision gate: none`.
 
+All fixed metadata values are matched ordinally after invariant case normalization. Do not accept visually ignorable Unicode characters as aliases for Gate, Ceremony, Execution engine, or Decision values.
+
 Default recommendation: `Gate: normal`, `Ceremony: light`. If the human chooses `ultra`, keep ceremony light unless they request audit detail.
 
 ## Real Project Binding

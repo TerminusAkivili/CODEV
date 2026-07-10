@@ -101,6 +101,7 @@ pwsh -File scripts/codev.ps1 approve -ProjectRoot . -GateId gate-id
 ```
 
 - Every command reads the state as bytes and strictly decodes the supported UTF encodings; malformed byte sequences are invalid.
+- Fixed metadata and command tokens are normalized with invariant casing and matched ordinally; Unicode-ignorable characters do not create valid enum values.
 - `check` returns `0` when continuation is allowed, `1` when a valid human gate blocks, and `2` for missing or invalid state.
 - `status` prints all six validated fields.
 - `approve` requires an exact ordinal, case-sensitive gate identifier and updates both decision fields.
@@ -118,7 +119,7 @@ The CLI is a mechanical guardrail. The CodeV skills still own judgment about int
 CodeV is maintained as a testable rule system.
 
 - `run-codev-v02-structure-tests.ps1` checks the skill set, frontmatter, README, manifests, templates, and required rule text. The explicit CodeV activation rule is tested here.
-- `run-codev-check-gate-tests.ps1` v0.3 gate tests cover six-field validation, exact case-sensitive Decision gate binding, approval transitions, and transactional encoding/BOM preservation. The 61-test suite also covers ordinal Unicode edge cases, strict decoding, concurrent editor saves, and Unix metadata synchronization.
+- `run-codev-check-gate-tests.ps1` v0.3 gate tests cover six-field validation, exact case-sensitive Decision gate binding, approval transitions, and transactional encoding/BOM preservation. The 65-test suite also covers ordinal Unicode edge cases in identifiers and fixed enums, strict decoding, concurrent editor saves, and Unix metadata synchronization.
 
 ### `templates/`: Default State
 

@@ -852,6 +852,25 @@ function Publish-CodeVBytesAtomically {
     }
 }
 
+function Test-CodeVOrdinalMember {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string[]]$AllowedValues
+    )
+
+    foreach ($allowedValue in $AllowedValues) {
+        if ([string]::Equals(
+            $Value,
+            $allowedValue,
+            [System.StringComparison]::Ordinal
+        )) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Assert-CodeVState {
     param([Parameter(Mandatory = $true)]$Document)
 
@@ -865,20 +884,31 @@ function Assert-CodeVState {
 
     $normalizedGate = $gate.ToLowerInvariant()
     $validGates = @("ultra", "strict", "normal", "loose", "free")
-    if ($validGates -notcontains $normalizedGate) {
+    if (-not (
+        Test-CodeVOrdinalMember `
+            -Value $normalizedGate `
+            -AllowedValues $validGates
+    )) {
         throw "Invalid Gate '$gate'. Expected one of: $($validGates -join ', ')."
     }
 
     $normalizedCeremony = $ceremony.ToLowerInvariant()
     $validCeremonies = @("light", "standard", "audit")
-    if ($validCeremonies -notcontains $normalizedCeremony) {
+    if (-not (
+        Test-CodeVOrdinalMember `
+            -Value $normalizedCeremony `
+            -AllowedValues $validCeremonies
+    )) {
         throw "Invalid Ceremony '$ceremony'. Expected one of: $($validCeremonies -join ', ')."
     }
 
     $normalizedExecutionEngine = $executionEngine.ToLowerInvariant()
     $validExecutionEngines = @("default", "superpower", "codex", "cursor")
     $isCustomExecutionEngine = $normalizedExecutionEngine -match "^custom:.+$"
-    if (($validExecutionEngines -notcontains $normalizedExecutionEngine) -and -not $isCustomExecutionEngine) {
+    $isFixedExecutionEngine = Test-CodeVOrdinalMember `
+        -Value $normalizedExecutionEngine `
+        -AllowedValues $validExecutionEngines
+    if (-not $isFixedExecutionEngine -and -not $isCustomExecutionEngine) {
         throw "Invalid Execution engine '$executionEngine'. Expected default, superpower, codex, cursor, or custom:<non-empty>."
     }
 
@@ -897,11 +927,18 @@ function Assert-CodeVState {
         "redirected",
         "rejected"
     )
-    if ($validDecisions -notcontains $normalizedDecision) {
+    if (-not (
+        Test-CodeVOrdinalMember `
+            -Value $normalizedDecision `
+            -AllowedValues $validDecisions
+    )) {
         throw "Invalid Decision '$decision'."
     }
 
-    if (@("approved", "approve", "yes", "yep", "y") -contains $normalizedDecision) {
+    if (Test-CodeVOrdinalMember `
+        -Value $normalizedDecision `
+        -AllowedValues @("approved", "approve", "yes", "yep", "y")
+    ) {
         $normalizedDecision = "approved"
     }
 
@@ -1096,14 +1133,22 @@ function Invoke-CodeVCheck {
         }
     }
 
-    if ($State.GateNormalized -eq "free") {
+    if ([string]::Equals(
+        $State.GateNormalized,
+        "free",
+        [System.StringComparison]::Ordinal
+    )) {
         return [pscustomobject]@{
             ExitCode = 0
             Output = "Gate free: midstream human gate disabled. Low-assurance mode."
         }
     }
 
-    if ($State.DecisionNormalized -ceq "approved") {
+    if ([string]::Equals(
+        $State.DecisionNormalized,
+        "approved",
+        [System.StringComparison]::Ordinal
+    )) {
         return [pscustomobject]@{
             ExitCode = 0
             Output = "Human approval present for gate $($State.CurrentGate)."
@@ -1139,7 +1184,11 @@ try {
     }
 
     $normalizedCommand = $Command.ToLowerInvariant()
-    if ($normalizedCommand -ceq "approve") {
+    if ([string]::Equals(
+        $normalizedCommand,
+        "approve",
+        [System.StringComparison]::Ordinal
+    )) {
         $approvedGate = Invoke-CodeVApprove -Path $StatePath -GateId $GateId
         Write-Output "Human approval recorded for gate $approvedGate."
         exit 0
@@ -1147,17 +1196,24 @@ try {
 
     $document = Read-CodeVDocument -Path $StatePath
     $state = Assert-CodeVState -Document $document
-    switch ($normalizedCommand) {
-        "check" {
-            $checkResult = Invoke-CodeVCheck -State $state
-            Write-Output $checkResult.Output
-            exit $checkResult.ExitCode
-        }
-        "status" {
-            Write-CodeVStatus -State $state
-            exit 0
-        }
+    if ([string]::Equals(
+        $normalizedCommand,
+        "check",
+        [System.StringComparison]::Ordinal
+    )) {
+        $checkResult = Invoke-CodeVCheck -State $state
+        Write-Output $checkResult.Output
+        exit $checkResult.ExitCode
     }
+    if ([string]::Equals(
+        $normalizedCommand,
+        "status",
+        [System.StringComparison]::Ordinal
+    )) {
+        Write-CodeVStatus -State $state
+        exit 0
+    }
+    throw "Unsupported CO-DEV command '$Command'."
 } catch {
     Write-Output $_.Exception.Message
     exit 2

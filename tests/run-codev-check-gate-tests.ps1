@@ -1,10 +1,18 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$script = Join-Path $root "scripts\codev-check-gate.ps1"
+$codevScript = Join-Path $root "scripts\codev.ps1"
+$legacyScript = Join-Path $root "scripts\codev-check-gate.ps1"
 
-if (-not (Test-Path -LiteralPath $script)) {
-    throw "Missing gate script: $script"
+if (-not (Test-Path -LiteralPath $legacyScript)) {
+    throw "Missing legacy gate script: $legacyScript"
+}
+
+function Get-PowerShellExecutable {
+    if ($PSVersionTable.PSEdition -eq "Core") {
+        return (Get-Process -Id $PID).Path
+    }
+    return (Join-Path $PSHOME "powershell.exe")
 }
 
 function New-Fixture {
@@ -13,46 +21,109 @@ function New-Fixture {
     return $dir
 }
 
-function Run-Gate {
+function Invoke-PowerShellChild {
+    param([string[]]$Arguments)
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $process = Start-Process `
+            -FilePath (Get-PowerShellExecutable) `
+            -ArgumentList $Arguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        $stdout = [System.IO.File]::ReadAllText($stdoutPath)
+        $stderr = [System.IO.File]::ReadAllText($stderrPath)
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = $stdout + $stderr
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Run-CodeV {
+    param(
+        [string]$ProjectRoot,
+        [ValidateSet("check", "status")]
+        [string]$Command = "check"
+    )
+
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $codevScript,
+        $Command,
+        "-ProjectRoot",
+        $ProjectRoot
+    )
+
+    return Invoke-PowerShellChild -Arguments $arguments
+}
+
+function Run-LegacyGate {
     param(
         [string]$ProjectRoot,
         [switch]$Status
     )
 
-    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-ProjectRoot", $ProjectRoot)
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $legacyScript,
+        "-ProjectRoot",
+        $ProjectRoot
+    )
     if ($Status) {
-        $args += "-Status"
+        $arguments += "-Status"
     }
 
-    $output = & powershell @args 2>&1
-    return [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
-        Output = ($output | Out-String)
-    }
+    return Invoke-PowerShellChild -Arguments $arguments
 }
 
 function Write-State {
     param(
         [string]$ProjectRoot,
-        [string]$Gate,
-        [string]$Ceremony,
+        [string]$Gate = "normal",
+        [string]$Ceremony = "light",
         [string]$ExecutionEngine = "superpower",
-        [string]$CurrentGate,
-        [string]$Decision
+        [string]$CurrentGate = "gate-1",
+        [string]$Decision = "pending",
+        [string]$DecisionGate = $CurrentGate,
+        [switch]$OmitGate,
+        [switch]$OmitDecisionGate,
+        [string[]]$AdditionalPreambleLines = @(),
+        [string[]]$IntentLines = @("Fixture.")
     )
 
-    Set-Content -LiteralPath (Join-Path $ProjectRoot ".codev.md") -Value @"
-# CO-DEV
+    $lines = @("# CO-DEV", "")
+    if (-not $OmitGate) {
+        $lines += "Gate: $Gate"
+    }
+    $lines += "Ceremony: $Ceremony"
+    $lines += "Execution engine: $ExecutionEngine"
+    $lines += "Current gate: $CurrentGate"
+    $lines += "Decision: $Decision"
+    if (-not $OmitDecisionGate) {
+        $lines += "Decision gate: $DecisionGate"
+    }
+    $lines += $AdditionalPreambleLines
+    $lines += ""
+    $lines += "## Intent"
+    $lines += $IntentLines
 
-Gate: $Gate
-Ceremony: $Ceremony
-Execution engine: $ExecutionEngine
-Current gate: $CurrentGate
-Decision: $Decision
-
-## Intent
-Fixture.
-"@
+    $content = ($lines -join "`r`n") + "`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $ProjectRoot ".codev.md"), $content)
 }
 
 function Assert-Equal {
@@ -69,79 +140,241 @@ function Assert-Contains {
     }
 }
 
+function Assert-NotContains {
+    param([string]$Text, [string]$Needle, [string]$Message)
+    if ($Text -like "*$Needle*") {
+        throw "$Message Unexpected '$Needle' in: $Text"
+    }
+}
+
 $tests = @()
 
 $tests += @{
-    Name = "strict gate without approval fails"
+    Name = "stale approval bound to another gate is invalid"
     Run = {
         $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "strict" -Ceremony "light" -CurrentGate "gate-1" -Decision "pending"
-        $result = Run-Gate -ProjectRoot $dir
+        Write-State -ProjectRoot $dir -CurrentGate "gate-new" -Decision "approved" -DecisionGate "gate-old"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "A decision bound to another gate is invalid."
+        Assert-Contains $result.Output "Decision gate 'gate-old' does not match Current gate 'gate-new'" "Mismatch output"
+    }
+}
+
+$tests += @{
+    Name = "gate binding comparison is case sensitive"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-alpha" -Decision "approved" -DecisionGate "Gate-Alpha"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Decision gate 'Gate-Alpha' does not match Current gate 'gate-alpha'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "missing decision gate is invalid"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -OmitDecisionGate
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Missing 'Decision gate'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "duplicate gate field is invalid"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -AdditionalPreambleLines @("Gate: loose")
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Duplicate 'Gate'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "invalid gate is rejected"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "nonsense"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Gate 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "invalid ceremony is rejected"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Ceremony "nonsense"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Ceremony 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "invalid execution engine is rejected"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -ExecutionEngine "nonsense"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Execution engine 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "invalid decision is rejected"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Decision "nonsense"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Invalid Decision 'nonsense'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "no current gate cannot be approved"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "none" -Decision "approved" -DecisionGate "none"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Decision must be 'pending' when Current gate is 'none'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "no current gate cannot retain a decision gate"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "none" -Decision "pending" -DecisionGate "gate-old"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Decision gate must be 'none' when Current gate is 'none'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "free mode still rejects stale decision binding"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "free" -CurrentGate "gate-new" -Decision "pending" -DecisionGate "gate-old"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Decision gate 'gate-old' does not match Current gate 'gate-new'" "Output"
+    }
+}
+
+$tests += @{
+    Name = "status rejects malformed state"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -OmitGate
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Missing 'Gate'" "Output"
+        Assert-NotContains $result.Output "CO-DEV status" "Status output"
+    }
+}
+
+$tests += @{
+    Name = "metadata fields after intent heading are ignored"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Decision "approved" -IntentLines @(
+            "Fixture.",
+            "Gate: nonsense",
+            "Ceremony: nonsense",
+            "Execution engine: nonsense",
+            "Current gate: gate-other",
+            "Decision: rejected",
+            "Decision gate: gate-other"
+        )
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Gate: normal" "Gate output"
+        Assert-Contains $result.Output "Decision: approved" "Decision output"
+        Assert-NotContains $result.Output "Gate: nonsense" "Preamble isolation"
+        Assert-NotContains $result.Output "gate-other" "Preamble isolation"
+    }
+}
+
+$tests += @{
+    Name = "matching approved decision passes"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-1" -Decision "approved" -DecisionGate "gate-1"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval present" "Output"
+    }
+}
+
+$tests += @{
+    Name = "matching compact y decision passes"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-1" -Decision "y" -DecisionGate "gate-1"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval present" "Output"
+    }
+}
+
+$tests += @{
+    Name = "matching pending decision blocks continuation"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-1" -Decision "pending" -DecisionGate "gate-1"
+        $result = Run-CodeV -ProjectRoot $dir
         Assert-Equal $result.ExitCode 1 "Exit code"
         Assert-Contains $result.Output "Human approval missing" "Output"
     }
 }
 
 $tests += @{
-    Name = "strict gate with approval passes"
+    Name = "no current gate with pending decision passes"
     Run = {
         $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "strict" -Ceremony "light" -CurrentGate "gate-1" -Decision "approved"
-        $result = Run-Gate -ProjectRoot $dir
-        Assert-Equal $result.ExitCode 0 "Exit code"
-        Assert-Contains $result.Output "Human approval present" "Output"
-    }
-}
-
-$tests += @{
-    Name = "strict gate with compact y approval passes"
-    Run = {
-        $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "strict" -Ceremony "light" -CurrentGate "gate-1" -Decision "y"
-        $result = Run-Gate -ProjectRoot $dir
-        Assert-Equal $result.ExitCode 0 "Exit code"
-        Assert-Contains $result.Output "Human approval present" "Output"
-    }
-}
-
-$tests += @{
-    Name = "free mode passes with low assurance warning"
-    Run = {
-        $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "free" -Ceremony "light" -CurrentGate "gate-1" -Decision "pending"
-        $result = Run-Gate -ProjectRoot $dir
-        Assert-Equal $result.ExitCode 0 "Exit code"
-        Assert-Contains $result.Output "Low-assurance mode" "Output"
-    }
-}
-
-$tests += @{
-    Name = "missing state fails"
-    Run = {
-        $dir = New-Fixture
-        $result = Run-Gate -ProjectRoot $dir
-        Assert-Equal $result.ExitCode 2 "Exit code"
-        Assert-Contains $result.Output "Missing CO-DEV state" "Output"
-    }
-}
-
-$tests += @{
-    Name = "no current gate passes"
-    Run = {
-        $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "ultra" -Ceremony "light" -CurrentGate "none" -Decision "pending"
-        $result = Run-Gate -ProjectRoot $dir
+        Write-State -ProjectRoot $dir -Gate "ultra" -CurrentGate "none" -Decision "pending" -DecisionGate "none"
+        $result = Run-CodeV -ProjectRoot $dir
         Assert-Equal $result.ExitCode 0 "Exit code"
         Assert-Contains $result.Output "No current gate" "Output"
     }
 }
 
 $tests += @{
-    Name = "status prints current codev state"
+    Name = "free mode with valid binding passes with warning"
     Run = {
         $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "normal" -Ceremony "light" -CurrentGate "gate-status" -Decision "pending"
-        $result = Run-Gate -ProjectRoot $dir -Status
+        Write-State -ProjectRoot $dir -Gate "free" -CurrentGate "gate-1" -Decision "pending" -DecisionGate "gate-1"
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Low-assurance mode" "Output"
+    }
+}
+
+$tests += @{
+    Name = "missing state is invalid"
+    Run = {
+        $dir = New-Fixture
+        $result = Run-CodeV -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Missing CO-DEV state" "Output"
+    }
+}
+
+$tests += @{
+    Name = "status prints all six fields"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "normal" -Ceremony "light" -ExecutionEngine "superpower" -CurrentGate "gate-status" -Decision "pending" -DecisionGate "gate-status"
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
         Assert-Equal $result.ExitCode 0 "Exit code"
         Assert-Contains $result.Output "CO-DEV status" "Output"
         Assert-Contains $result.Output "Gate: normal" "Output"
@@ -149,6 +382,18 @@ $tests += @{
         Assert-Contains $result.Output "Execution engine: superpower" "Output"
         Assert-Contains $result.Output "Current gate: gate-status" "Output"
         Assert-Contains $result.Output "Decision: pending" "Output"
+        Assert-Contains $result.Output "Decision gate: gate-status" "Output"
+    }
+}
+
+$tests += @{
+    Name = "legacy checker remains callable"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-legacy" -Decision "approved" -DecisionGate "gate-legacy"
+        $result = Run-LegacyGate -ProjectRoot $dir
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Human approval present" "Output"
     }
 }
 

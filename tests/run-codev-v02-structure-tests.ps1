@@ -69,7 +69,7 @@ Assert-Equal ($templateFiles -join ",") "codev.md" "Default templates should be 
 $readme = Get-Content -Raw -LiteralPath (Join-Path $root "README.md")
 Assert-Contains $readme "Ceremony" "README should explain ceremony weight."
 Assert-Contains $readme ".codev.md" "README should document the default state file."
-Assert-Contains $readme "ultra + light" "README should recommend lightweight frequent gates."
+Assert-Contains $readme "normal + light" "README should match the normal/light default used by the skill and template."
 Assert-Contains $readme "Roadmap is coarse-grained" "README should keep roadmap coarse."
 Assert-Contains $readme "Trace is fine-grained" "README should keep trace fine-grained."
 Assert-Contains $readme "Gate boundaries are product validation boundaries, not paperwork boundaries" "README should prevent bureaucratic normal gates."

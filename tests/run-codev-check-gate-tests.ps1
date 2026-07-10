@@ -15,36 +15,25 @@ function Get-PowerShellExecutable {
     return (Join-Path $PSHOME "powershell.exe")
 }
 
+$fixtureDirectories = [System.Collections.Generic.List[string]]::new()
+
 function New-Fixture {
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("codev-gate-test-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $fixtureDirectories.Add($dir)
     return $dir
 }
 
 function Invoke-PowerShellChild {
     param([string[]]$Arguments)
 
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $powerShellExecutable = Get-PowerShellExecutable
+    $output = & $powerShellExecutable @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
 
-    try {
-        $process = Start-Process `
-            -FilePath (Get-PowerShellExecutable) `
-            -ArgumentList $Arguments `
-            -NoNewWindow `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-
-        $stdout = [System.IO.File]::ReadAllText($stdoutPath)
-        $stderr = [System.IO.File]::ReadAllText($stderrPath)
-        return [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            Output = $stdout + $stderr
-        }
-    } finally {
-        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = ($output | Out-String)
     }
 }
 
@@ -387,6 +376,19 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "project root path with spaces is preserved"
+    Run = {
+        $fixtureRoot = New-Fixture
+        $dir = Join-Path $fixtureRoot "project root with spaces"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Write-State -ProjectRoot $dir -Gate "normal" -CurrentGate "gate-spaces" -Decision "pending" -DecisionGate "gate-spaces"
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains $result.Output "Current gate: gate-spaces" "Output"
+    }
+}
+
+$tests += @{
     Name = "legacy checker remains callable"
     Run = {
         $dir = New-Fixture
@@ -398,10 +400,16 @@ $tests += @{
 }
 
 $passed = 0
-foreach ($test in $tests) {
-    & $test.Run
-    Write-Output "PASS $($test.Name)"
-    $passed++
-}
+try {
+    foreach ($test in $tests) {
+        & $test.Run
+        Write-Output "PASS $($test.Name)"
+        $passed++
+    }
 
-Write-Output "All $passed CO-DEV gate tests passed."
+    Write-Output "All $passed CO-DEV gate tests passed."
+} finally {
+    foreach ($fixtureDirectory in $fixtureDirectories) {
+        Remove-Item -LiteralPath $fixtureDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}

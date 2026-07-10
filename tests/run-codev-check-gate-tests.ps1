@@ -15,10 +15,94 @@ function Get-PowerShellExecutable {
     return (Join-Path $PSHOME "powershell.exe")
 }
 
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Argument)
+
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    $null = $builder.Append('"')
+    $backslashCount = 0
+    for ($index = 0; $index -lt $Argument.Length; $index++) {
+        $character = $Argument[$index]
+        if ($character -eq '\') {
+            $backslashCount++
+            continue
+        }
+
+        if ($character -eq '"') {
+            if ($backslashCount -gt 0) {
+                $null = $builder.Append('\' * ($backslashCount * 2))
+            }
+            $null = $builder.Append('\')
+            $null = $builder.Append('"')
+            $backslashCount = 0
+            continue
+        }
+
+        if ($backslashCount -gt 0) {
+            $null = $builder.Append('\' * $backslashCount)
+            $backslashCount = 0
+        }
+        $null = $builder.Append($character)
+    }
+
+    if ($backslashCount -gt 0) {
+        $null = $builder.Append('\' * ($backslashCount * 2))
+    }
+    $null = $builder.Append('"')
+    return $builder.ToString()
+}
+
+function New-CodeVProcessStartInfo {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [hashtable]$EnvironmentVariables = @{}
+    )
+
+    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $processInfo.FileName = Get-PowerShellExecutable
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+
+    $argumentListProperty = $processInfo.GetType().GetProperty("ArgumentList")
+    if ($null -ne $argumentListProperty) {
+        foreach ($argument in $Arguments) {
+            $processInfo.ArgumentList.Add($argument)
+        }
+    } else {
+        $processInfo.Arguments = (
+            $Arguments |
+                ForEach-Object { ConvertTo-ProcessArgument -Argument $_ }
+        ) -join " "
+    }
+
+    foreach ($entry in $EnvironmentVariables.GetEnumerator()) {
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $processInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+        } else {
+            $processInfo.EnvironmentVariables[[string]$entry.Key] = [string]$entry.Value
+        }
+    }
+
+    return $processInfo
+}
+
 $fixtureDirectories = [System.Collections.Generic.List[string]]::new()
 
 function New-Fixture {
-    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("codev-gate-test-" + [guid]::NewGuid().ToString("N"))
+    param([switch]$WithSpaces)
+
+    $prefix = if ($WithSpaces) {
+        "codev gate test-"
+    } else {
+        "codev-gate-test-"
+    }
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ($prefix + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $fixtureDirectories.Add($dir)
     return $dir
@@ -292,6 +376,27 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "gate binding comparison is ordinal"
+    Run = {
+        $dir = New-Fixture
+        $composedGate = "gate-$([char]0x00E9)"
+        $decomposedGate = "gate-e$([char]0x0301)"
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate $composedGate `
+            -Decision "approved" `
+            -DecisionGate $decomposedGate
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Decision gate '$decomposedGate' does not match Current gate '$composedGate'" `
+            "Output"
+    }
+}
+
+$tests += @{
     Name = "missing decision gate is invalid"
     Run = {
         $dir = New-Fixture
@@ -383,6 +488,44 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "current gate none sentinel must use canonical casing"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "NONE" `
+            -Decision "pending" `
+            -DecisionGate "none"
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Current gate sentinel must be exactly 'none'." `
+            "Output"
+    }
+}
+
+$tests += @{
+    Name = "decision gate none sentinel must use canonical casing"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "none" `
+            -Decision "pending" `
+            -DecisionGate "NONE"
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Decision gate sentinel must be exactly 'none'." `
+            "Output"
+    }
+}
+
+$tests += @{
     Name = "free mode still rejects stale decision binding"
     Run = {
         $dir = New-Fixture
@@ -401,6 +544,59 @@ $tests += @{
         $result = Run-CodeV -ProjectRoot $dir -Command "status"
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-Contains $result.Output "Missing 'Gate'" "Output"
+        Assert-NotContains $result.Output "CO-DEV status" "Status output"
+    }
+}
+
+$tests += @{
+    Name = "check rejects undecodable unmarked bytes"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-invalid-check-bytes" `
+            -Decision "approved" `
+            -DecisionGate "gate-invalid-check-bytes"
+        $statePath = Join-Path $dir ".codev.md"
+        [byte[]]$validBytes = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$invalidBytes = New-Object byte[] ($validBytes.Length + 1)
+        [System.Array]::Copy($validBytes, $invalidBytes, $validBytes.Length)
+        $invalidBytes[$invalidBytes.Length - 1] = 0xFF
+        [System.IO.File]::WriteAllBytes($statePath, $invalidBytes)
+
+        $result = Run-CodeV -ProjectRoot $dir
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Unable to decode .codev.md as UTF-8 without BOM." `
+            "Output"
+    }
+}
+
+$tests += @{
+    Name = "status rejects undecodable unmarked bytes"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-invalid-status-bytes" `
+            -Decision "approved" `
+            -DecisionGate "gate-invalid-status-bytes"
+        $statePath = Join-Path $dir ".codev.md"
+        [byte[]]$validBytes = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$invalidBytes = New-Object byte[] ($validBytes.Length + 1)
+        [System.Array]::Copy($validBytes, $invalidBytes, $validBytes.Length)
+        $invalidBytes[$invalidBytes.Length - 1] = 0xFF
+        [System.IO.File]::WriteAllBytes($statePath, $invalidBytes)
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Unable to decode .codev.md as UTF-8 without BOM." `
+            "Output"
         Assert-NotContains $result.Output "CO-DEV status" "Status output"
     }
 }
@@ -630,6 +826,42 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "invalid metadata delay fails before approval publication"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-invalid-metadata-delay" `
+            -Decision "pending" `
+            -DecisionGate "gate-invalid-metadata-delay"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+
+        $previousDelay = $env:CODEV_TEST_APPROVAL_METADATA_DELAY_MS
+        $env:CODEV_TEST_APPROVAL_METADATA_DELAY_MS = "invalid"
+        try {
+            $result = Run-CodeV `
+                -ProjectRoot $dir `
+                -Command "approve" `
+                -GateId "gate-invalid-metadata-delay"
+        } finally {
+            $env:CODEV_TEST_APPROVAL_METADATA_DELAY_MS = $previousDelay
+        }
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Invalid CODEV_TEST_APPROVAL_METADATA_DELAY_MS value." `
+            "Output"
+        Assert-ByteSequenceEqual `
+            $after `
+            $before `
+            "Invalid metadata delay must fail before publication."
+    }
+}
+
+$tests += @{
     Name = "approve rejects a different gate id without changing bytes"
     Run = {
         $dir = New-Fixture
@@ -658,6 +890,75 @@ $tests += @{
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-Contains $result.Output "GateId 'Gate-Alpha' does not exactly match Current gate 'gate-alpha'" "Output"
         Assert-ByteSequenceEqual $after $before "Case-mismatched GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve gate id comparison is ordinal and preserves bytes"
+    Run = {
+        $dir = New-Fixture
+        $composedGate = "gate-$([char]0x00E9)"
+        $decomposedGate = "gate-e$([char]0x0301)"
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate $composedGate `
+            -Decision "pending" `
+            -DecisionGate $composedGate
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+
+        $result = Run-CodeV `
+            -ProjectRoot $dir `
+            -Command "approve" `
+            -GateId $decomposedGate
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "GateId '$decomposedGate' does not exactly match Current gate '$composedGate'" `
+            "Output"
+        Assert-ByteSequenceEqual `
+            $after `
+            $before `
+            "Ordinal-mismatched GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "asynchronous approval supports project roots with spaces"
+    Run = {
+        $dir = New-Fixture -WithSpaces
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-async-spaces" `
+            -Decision "pending" `
+            -DecisionGate "gate-async-spaces"
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $codevScript,
+            "approve",
+            "-ProjectRoot",
+            $dir,
+            "-GateId",
+            "gate-async-spaces"
+        )
+
+        $processInfo = New-CodeVProcessStartInfo -Arguments $arguments
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $null = $process.Start()
+        $process.WaitForExit()
+
+        $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+        Assert-Equal $process.ExitCode 0 "Exit code"
+        Assert-Contains `
+            $output `
+            "Human approval recorded for gate gate-async-spaces." `
+            "Output"
     }
 }
 
@@ -713,7 +1014,6 @@ $tests += @{
             -DecisionGate "gate-race" `
             -IntentLines @("Original intent.")
         $statePath = Join-Path $dir ".codev.md"
-        $powerShellExecutable = Get-PowerShellExecutable
         $arguments = @(
             "-NoProfile",
             "-ExecutionPolicy",
@@ -727,18 +1027,11 @@ $tests += @{
             "gate-race"
         )
 
-        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processInfo.FileName = $powerShellExecutable
-        $processInfo.Arguments = $arguments -join " "
-        $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $true
-        $processInfo.RedirectStandardOutput = $true
-        $processInfo.RedirectStandardError = $true
-        if ($PSVersionTable.PSEdition -eq "Core") {
-            $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-        } else {
-            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-        }
+        $processInfo = New-CodeVProcessStartInfo `
+            -Arguments $arguments `
+            -EnvironmentVariables @{
+                CODEV_TEST_APPROVAL_DELAY_MS = "2000"
+            }
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $null = $process.Start()
@@ -827,7 +1120,6 @@ $tests += @{
             Replace("gate-recovery-b", "gate-recovery-c").
             Replace("Recovery edit B.", "Recovery edit C.")
 
-        $powerShellExecutable = Get-PowerShellExecutable
         $arguments = @(
             "-NoProfile",
             "-ExecutionPolicy",
@@ -840,20 +1132,12 @@ $tests += @{
             "-GateId",
             "gate-recovery-a"
         )
-        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processInfo.FileName = $powerShellExecutable
-        $processInfo.Arguments = $arguments -join " "
-        $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $true
-        $processInfo.RedirectStandardOutput = $true
-        $processInfo.RedirectStandardError = $true
-        if ($PSVersionTable.PSEdition -eq "Core") {
-            $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-            $processInfo.Environment["CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"] = "2000"
-        } else {
-            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
-            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"] = "2000"
-        }
+        $processInfo = New-CodeVProcessStartInfo `
+            -Arguments $arguments `
+            -EnvironmentVariables @{
+                CODEV_TEST_APPROVAL_DELAY_MS = "2000"
+                CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS = "2000"
+            }
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $null = $process.Start()
@@ -919,10 +1203,13 @@ $tests += @{
         $after = [System.IO.File]::ReadAllText($statePath)
         $recoveryFiles = Get-ChildItem `
             -LiteralPath $dir `
-            -Filter "*.codev-recovery-*" `
             -File `
             -Force `
-            -ErrorAction SilentlyContinue
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -ne ".codev.md" -and
+                $_.Name -like "*.codev-*"
+            }
 
         Assert-Equal $exitCode 2 "Exit code"
         Assert-Contains $output "State changed during approval" "Output"
@@ -930,6 +1217,123 @@ $tests += @{
         Assert-Contains $after "Decision gate: gate-recovery-c" "Latest binding preservation"
         Assert-Contains $after "Recovery edit C." "Latest content preservation"
         Assert-Equal @($recoveryFiles).Count 0 "Resolved recovery file count"
+    }
+}
+
+$tests += @{
+    Name = "approval preserves a Unix edit before metadata synchronization"
+    Run = {
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            return
+        }
+
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-metadata-window-a" `
+            -Decision "pending" `
+            -DecisionGate "gate-metadata-window-a" `
+            -IntentLines @("Original metadata window intent.")
+        $statePath = Join-Path $dir ".codev.md"
+        & chmod 600 $statePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to set initial Unix fixture permissions."
+        }
+        $originalText = [System.IO.File]::ReadAllText($statePath)
+        $concurrentText = $originalText.
+            Replace("gate-metadata-window-a", "gate-metadata-window-b").
+            Replace("Original metadata window intent.", "Concurrent metadata window intent.")
+
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $codevScript,
+            "approve",
+            "-ProjectRoot",
+            $dir,
+            "-GateId",
+            "gate-metadata-window-a"
+        )
+        $processInfo = New-CodeVProcessStartInfo `
+            -Arguments $arguments `
+            -EnvironmentVariables @{
+                CODEV_TEST_APPROVAL_METADATA_DELAY_MS = "4000"
+            }
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $null = $process.Start()
+
+        $approvedStateVisible = $false
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            try {
+                $currentText = [System.IO.File]::ReadAllText($statePath)
+                if ($currentText -like "*Decision: approved*") {
+                    $approvedStateVisible = $true
+                    break
+                }
+            } catch [System.IO.IOException] {
+            }
+            if ($process.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+        if (-not $approvedStateVisible -or $process.HasExited) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Approval process did not pause before Unix metadata synchronization."
+        }
+
+        Start-Sleep -Milliseconds 1500
+        if ($process.HasExited) {
+            $process.WaitForExit()
+            throw "Approval process did not honor the Unix metadata synchronization delay."
+        }
+
+        Write-Utf8TextAtomically -Path $statePath -Text $concurrentText
+        & chmod 640 $statePath
+        if ($LASTEXITCODE -ne 0) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Unable to apply concurrent Unix metadata window permissions."
+        }
+
+        $process.WaitForExit()
+        $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+        $after = [System.IO.File]::ReadAllText($statePath)
+        $kernel = (& uname -s).Trim()
+        if ($kernel -eq "Darwin") {
+            $mode = (& stat -f "%Lp" $statePath).Trim()
+        } else {
+            $mode = (& stat -c "%a" $statePath).Trim()
+        }
+
+        Assert-Equal $process.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $output `
+            "State changed during approval metadata synchronization." `
+            "Output"
+        Assert-Contains `
+            $after `
+            "Current gate: gate-metadata-window-b" `
+            "Concurrent gate preservation"
+        Assert-Contains `
+            $after `
+            "Decision gate: gate-metadata-window-b" `
+            "Concurrent binding preservation"
+        Assert-Contains `
+            $after `
+            "Concurrent metadata window intent." `
+            "Concurrent content preservation"
+        Assert-NotContains $after "Decision: approved" "Concurrent approval preservation"
+        Assert-Equal $mode "640" "Concurrent Unix metadata window mode"
     }
 }
 
@@ -987,7 +1391,6 @@ $tests += @{
             throw "Unable to set initial Unix fixture permissions."
         }
 
-        $powerShellExecutable = Get-PowerShellExecutable
         $arguments = @(
             "-NoProfile",
             "-ExecutionPolicy",
@@ -1000,14 +1403,11 @@ $tests += @{
             "-GateId",
             "gate-mode-race"
         )
-        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $processInfo.FileName = $powerShellExecutable
-        $processInfo.Arguments = $arguments -join " "
-        $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $true
-        $processInfo.RedirectStandardOutput = $true
-        $processInfo.RedirectStandardError = $true
-        $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+        $processInfo = New-CodeVProcessStartInfo `
+            -Arguments $arguments `
+            -EnvironmentVariables @{
+                CODEV_TEST_APPROVAL_DELAY_MS = "2000"
+            }
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $processInfo
         $null = $process.Start()
@@ -1642,6 +2042,18 @@ $tests += @{
             -ExpectedExitCode 0 `
             -KeyOutput @("Human approval present for gate gate-state-spaces.") `
             -Message "Explicit state path spaces parity"
+    }
+}
+
+$testNamePattern = [System.Environment]::GetEnvironmentVariable(
+    "CODEV_TEST_NAME_PATTERN"
+)
+if (-not [string]::IsNullOrWhiteSpace($testNamePattern)) {
+    $tests = @(
+        $tests | Where-Object { $_.Name -like "*$testNamePattern*" }
+    )
+    if ($tests.Count -eq 0) {
+        throw "No CO-DEV gate tests matched '$testNamePattern'."
     }
 }
 

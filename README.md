@@ -73,7 +73,7 @@ The six required metadata fields are:
 - `Decision`: whether the human has approved, redirected, rejected, or left the gate pending.
 - `Decision gate`: the gate identifier to which the decision belongs.
 
-Decision gate must exactly match Current gate when a gate is active. A new gate starts with `Decision: pending` and the matching `Decision gate`; no active gate requires `Decision: pending` and `Decision gate: none`.
+Decision gate must exactly match Current gate when a gate is active. The comparison is ordinal and case-sensitive, with no Unicode normalization. The reserved no-gate sentinel is exactly lowercase `none`. A new gate starts with `Decision: pending` and the matching `Decision gate`; no active gate requires `Decision: pending` and `Decision gate: none`.
 
 The file has three working sections:
 
@@ -100,15 +100,16 @@ pwsh -File scripts/codev.ps1 status -ProjectRoot .
 pwsh -File scripts/codev.ps1 approve -ProjectRoot . -GateId gate-id
 ```
 
+- Every command reads the state as bytes and strictly decodes the supported UTF encodings; malformed byte sequences are invalid.
 - `check` returns `0` when continuation is allowed, `1` when a valid human gate blocks, and `2` for missing or invalid state.
 - `status` prints all six validated fields.
-- `approve` requires an exact, case-sensitive gate identifier and updates both decision fields.
+- `approve` requires an exact ordinal, case-sensitive gate identifier and updates both decision fields.
 
 Windows PowerShell 5.1 remains supported on Windows. macOS and Linux require PowerShell 7 (`pwsh`); PowerShell 7 is also supported on Windows.
 
 `scripts/codev-check-gate.ps1` remains the compatibility wrapper for the original Windows command. It delegates check and `-Status` operations to `scripts/codev.ps1` and forwards the exit code.
 
-The `approve` command performs a transactional approval write. It flushes a same-directory temporary file before exchanging it with `.codev.md`; Linux uses `renameat2(RENAME_EXCHANGE)`, macOS uses `renamex_np(RENAME_SWAP)`, and Windows uses `File.Replace`. The displaced file is therefore the exact live version from the same atomic operation. Bounded atomic recovery follows any superseding edits instead of deleting them; if continuous writers prevent recovery from settling, the latest recovery file is retained and approval fails. Unix snapshots include permission, ownership, ACL, and extended-attribute metadata, and the displaced file is used to republish approved bytes with the latest metadata. Successful approval preserves the supported original encoding and BOM, newline style, and non-field content. New unmarked state files and the default template remain UTF-8 without BOM.
+The `approve` command performs a transactional approval write. It flushes a same-directory temporary file before exchanging it with `.codev.md`; Linux uses `renameat2(RENAME_EXCHANGE)`, macOS uses `renamex_np(RENAME_SWAP)`, and Windows uses `File.Replace`. The displaced file is therefore the exact live version from the same atomic operation. Bounded atomic recovery follows any superseding edits instead of deleting them; if continuous writers prevent recovery from settling, the latest recovery file is retained and approval fails. Unix snapshots include permission, ownership, ACL, and extended-attribute metadata, and the displaced file is used to republish approved bytes with the latest metadata. The snapshot produced by the first publication remains the expected live state through that metadata synchronization, so any intervening edit is restored and approval fails. Successful approval preserves the supported original encoding and BOM, newline style, and non-field content. New unmarked state files and the default template remain UTF-8 without BOM.
 
 The CLI is a mechanical guardrail. The CodeV skills still own judgment about intent, shape, drift, and human review.
 
@@ -117,7 +118,7 @@ The CLI is a mechanical guardrail. The CodeV skills still own judgment about int
 CodeV is maintained as a testable rule system.
 
 - `run-codev-v02-structure-tests.ps1` checks the skill set, frontmatter, README, manifests, templates, and required rule text. The explicit CodeV activation rule is tested here.
-- `run-codev-check-gate-tests.ps1` v0.3 gate tests cover six-field validation, exact case-sensitive Decision gate binding, approval transitions, and transactional encoding/BOM preservation.
+- `run-codev-check-gate-tests.ps1` v0.3 gate tests cover six-field validation, exact case-sensitive Decision gate binding, approval transitions, and transactional encoding/BOM preservation. The 61-test suite also covers ordinal Unicode edge cases, strict decoding, concurrent editor saves, and Unix metadata synchronization.
 
 ### `templates/`: Default State
 

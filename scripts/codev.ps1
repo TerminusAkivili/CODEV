@@ -192,8 +192,9 @@ function ConvertFrom-CodeVText {
 function Read-CodeVDocument {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $text = [System.IO.File]::ReadAllText($Path)
-    return ConvertFrom-CodeVText -Text $text -Path $Path
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($Path)
+    $encodingInfo = ConvertFrom-CodeVBytes -Bytes $bytes
+    return ConvertFrom-CodeVText -Text $encodingInfo.Text -Path $Path
 }
 
 function Test-CodeVBytePrefix {
@@ -523,7 +524,11 @@ function Test-CodeVFileSnapshotEqual {
 
     return (
         (Test-CodeVBytesEqual -Actual $Actual.Bytes -Expected $Expected.Bytes) -and
-        $Actual.Metadata -ceq $Expected.Metadata
+        [string]::Equals(
+            [string]$Actual.Metadata,
+            [string]$Expected.Metadata,
+            [System.StringComparison]::Ordinal
+        )
     )
 }
 
@@ -658,7 +663,8 @@ function Sync-CodeVUnixMetadata {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$MetadataSourcePath,
-        [Parameter(Mandatory = $true)][byte[]]$Bytes
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)]$ExpectedLiveSnapshot
     )
 
     if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
@@ -671,7 +677,6 @@ function Sync-CodeVUnixMetadata {
     $operationId = [guid]::NewGuid().ToString("N")
     $tempPath = Join-Path $directory ".$fileName.codev-$operationId.metadata.tmp"
     $displacedPath = $null
-    $expectedLiveSnapshot = Get-CodeVFileSnapshot -Path $fullPath
     $candidateSnapshot = $null
     $swapCompleted = $false
 
@@ -782,6 +787,8 @@ function Publish-CodeVBytesAtomically {
         -EnvironmentVariable "CODEV_TEST_APPROVAL_DELAY_MS"
     $recoveryDelay = Get-CodeVTestDelayMilliseconds `
         -EnvironmentVariable "CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"
+    $metadataDelay = Get-CodeVTestDelayMilliseconds `
+        -EnvironmentVariable "CODEV_TEST_APPROVAL_METADATA_DELAY_MS"
 
     try {
         Copy-CodeVFileForAtomicWrite `
@@ -833,10 +840,12 @@ function Publish-CodeVBytesAtomically {
         throw $publishException
     }
 
+    Invoke-CodeVTestDelay -Milliseconds $metadataDelay
     Sync-CodeVUnixMetadata `
         -Path $fullPath `
         -MetadataSourcePath $backupPath `
-        -Bytes $Bytes
+        -Bytes $Bytes `
+        -ExpectedLiveSnapshot $publishedSnapshot
 
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
         Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
@@ -900,14 +909,54 @@ function Assert-CodeVState {
         throw "Invalid Decision gate '$decisionGate'. Expected 'none' or a non-empty identifier."
     }
 
-    if ($currentGate -ieq "none") {
-        if ($normalizedDecision -cne "pending") {
+    $currentGateIsNone = [string]::Equals(
+        $currentGate,
+        "none",
+        [System.StringComparison]::Ordinal
+    )
+    if (
+        -not $currentGateIsNone -and
+        [string]::Equals(
+            $currentGate,
+            "none",
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "Current gate sentinel must be exactly 'none'."
+    }
+
+    $decisionGateIsNone = [string]::Equals(
+        $decisionGate,
+        "none",
+        [System.StringComparison]::Ordinal
+    )
+    if (
+        -not $decisionGateIsNone -and
+        [string]::Equals(
+            $decisionGate,
+            "none",
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "Decision gate sentinel must be exactly 'none'."
+    }
+
+    if ($currentGateIsNone) {
+        if (-not [string]::Equals(
+            $normalizedDecision,
+            "pending",
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Decision must be 'pending' when Current gate is 'none'."
         }
-        if ($decisionGate -ine "none") {
+        if (-not $decisionGateIsNone) {
             throw "Decision gate must be 'none' when Current gate is 'none'."
         }
-    } elseif ($decisionGate -cne $currentGate) {
+    } elseif (-not [string]::Equals(
+        $decisionGate,
+        $currentGate,
+        [System.StringComparison]::Ordinal
+    )) {
         throw "Decision gate '$decisionGate' does not match Current gate '$currentGate'."
     }
 
@@ -954,13 +1003,21 @@ function Invoke-CodeVApprove {
         $document = ConvertFrom-CodeVText -Text $encodingInfo.Text -Path $Path
         $state = Assert-CodeVState -Document $document
 
-        if ($state.CurrentGate -ieq "none") {
+        if ([string]::Equals(
+            $state.CurrentGate,
+            "none",
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Current gate is 'none'; there is no active gate to approve."
         }
         if ([string]::IsNullOrWhiteSpace($GateId)) {
             throw "GateId is required for approve."
         }
-        if ($GateId -cne $state.CurrentGate) {
+        if (-not [string]::Equals(
+            $GateId,
+            $state.CurrentGate,
+            [System.StringComparison]::Ordinal
+        )) {
             throw "GateId '$GateId' does not exactly match Current gate '$($state.CurrentGate)'."
         }
 
@@ -972,10 +1029,18 @@ function Invoke-CodeVApprove {
             -Value $state.CurrentGate
         $updatedDocument = ConvertFrom-CodeVText -Text $updatedText -Path $Path
         $updatedState = Assert-CodeVState -Document $updatedDocument
-        if ($updatedState.Decision -cne "approved") {
+        if (-not [string]::Equals(
+            $updatedState.Decision,
+            "approved",
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Approval update did not prepare Decision: approved."
         }
-        if ($updatedState.DecisionGate -cne $state.CurrentGate) {
+        if (-not [string]::Equals(
+            $updatedState.DecisionGate,
+            $state.CurrentGate,
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Approval update did not prepare the exact current gate."
         }
 
@@ -994,10 +1059,18 @@ function Invoke-CodeVApprove {
             -Text $persistedEncodingInfo.Text `
             -Path $Path
         $persistedState = Assert-CodeVState -Document $persistedDocument
-        if ($persistedState.Decision -cne "approved") {
+        if (-not [string]::Equals(
+            $persistedState.Decision,
+            "approved",
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Approval write did not persist Decision: approved."
         }
-        if ($persistedState.DecisionGate -cne $state.CurrentGate) {
+        if (-not [string]::Equals(
+            $persistedState.DecisionGate,
+            $state.CurrentGate,
+            [System.StringComparison]::Ordinal
+        )) {
             throw "Approval write did not persist the exact current gate."
         }
 
@@ -1012,7 +1085,11 @@ function Invoke-CodeVApprove {
 function Invoke-CodeVCheck {
     param([Parameter(Mandatory = $true)]$State)
 
-    if ($State.CurrentGate -ieq "none") {
+    if ([string]::Equals(
+        $State.CurrentGate,
+        "none",
+        [System.StringComparison]::Ordinal
+    )) {
         return [pscustomobject]@{
             ExitCode = 0
             Output = "No current gate. Ceremony: $($State.Ceremony)."

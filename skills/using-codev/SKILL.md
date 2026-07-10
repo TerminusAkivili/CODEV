@@ -30,7 +30,7 @@ Required fields:
 - `Decision: pending|approved|redirected|rejected`
 - `Decision gate: none|gate-id`
 
-Decision gate must exactly match Current gate when a gate is active. State transitions are explicit: a new gate means `Decision: pending` plus the matching `Decision gate`; no gate means `Decision: pending` plus `Decision gate: none`.
+Decision gate must exactly match Current gate when a gate is active. Gate identifiers use ordinal, case-sensitive comparison without Unicode normalization, and the reserved no-gate sentinel is exactly lowercase `none`. State transitions are explicit: a new gate means `Decision: pending` plus the matching `Decision gate`; no gate means `Decision: pending` plus `Decision gate: none`.
 
 Default recommendation: `Gate: normal`, `Ceremony: light`. If the human chooses `ultra`, keep ceremony light unless they request audit detail.
 

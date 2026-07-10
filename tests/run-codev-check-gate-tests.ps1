@@ -603,6 +603,163 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "approve preserves UTF-16BE BOM decoded content and non-field text"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $nonFieldText = "Keep UTF-16BE snowman $([char]0x2603) and trace text."
+        $text = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: gate-utf16be",
+            "Decision: pending",
+            "Decision gate: gate-utf16be",
+            "Unrelated preamble: preserve UTF-16BE",
+            "",
+            "## Intent",
+            $nonFieldText,
+            "## Trace",
+            "Trace remains unchanged."
+        ) -join "`r`n"
+        $encoding = [System.Text.UnicodeEncoding]::new($true, $true, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $text -Encoding $encoding -IncludePreamble
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        $expectedText = $text.Replace("Decision: pending", "Decision: approved")
+        [byte[]]$expected = Get-EncodedBytes `
+            -Text $expectedText `
+            -Encoding $encoding `
+            -IncludePreamble
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-utf16be"
+        [byte[]]$after = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$preamble = $encoding.GetPreamble()
+        [byte[]]$actualPreamble = $after[0..($preamble.Length - 1)]
+        $decoded = $encoding.GetString(
+            $after,
+            $preamble.Length,
+            $after.Length - $preamble.Length
+        )
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Equal `
+            $result.Output `
+            ("Human approval recorded for gate gate-utf16be." + [Environment]::NewLine) `
+            "Exact output"
+        Assert-ByteSequenceEqual $actualPreamble $preamble "UTF-16BE BOM"
+        Assert-ByteSequenceEqual $after $expected "UTF-16BE exact encoded content"
+        Assert-Equal $decoded $expectedText "UTF-16BE decoded content"
+        Assert-Contains $decoded $nonFieldText "UTF-16BE non-field text"
+        Assert-Contains $decoded "Unrelated preamble: preserve UTF-16BE" "UTF-16BE preamble text"
+        Assert-Contains $decoded "Trace remains unchanged." "UTF-16BE trace text"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves UTF-32LE BOM decoded content and non-field text"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $nonFieldText = "Keep UTF-32LE snowman $([char]0x2603) and shape text."
+        $text = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: gate-utf32le",
+            "Decision: rejected",
+            "Decision gate: gate-utf32le",
+            "Unrelated preamble: preserve UTF-32LE",
+            "",
+            "## Intent",
+            $nonFieldText,
+            "## Shape",
+            "Shape remains unchanged."
+        ) -join "`n"
+        $encoding = [System.Text.UTF32Encoding]::new($false, $true, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $text -Encoding $encoding -IncludePreamble
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        $expectedText = $text.Replace("Decision: rejected", "Decision: approved")
+        [byte[]]$expected = Get-EncodedBytes `
+            -Text $expectedText `
+            -Encoding $encoding `
+            -IncludePreamble
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-utf32le"
+        [byte[]]$after = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$preamble = $encoding.GetPreamble()
+        [byte[]]$actualPreamble = $after[0..($preamble.Length - 1)]
+        $decoded = $encoding.GetString(
+            $after,
+            $preamble.Length,
+            $after.Length - $preamble.Length
+        )
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-ByteSequenceEqual $actualPreamble $preamble "UTF-32LE BOM"
+        Assert-ByteSequenceEqual $after $expected "UTF-32LE exact encoded content"
+        Assert-Equal $decoded $expectedText "UTF-32LE decoded content"
+        Assert-Contains $decoded $nonFieldText "UTF-32LE non-field text"
+        Assert-Contains $decoded "Unrelated preamble: preserve UTF-32LE" "UTF-32LE preamble text"
+        Assert-Contains $decoded "Shape remains unchanged." "UTF-32LE shape text"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves UTF-32BE BOM decoded content and non-field text"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $nonFieldText = "Keep UTF-32BE snowman $([char]0x2603) and intent text."
+        $text = @(
+            "# CO-DEV",
+            "",
+            "Gate: strict",
+            "Ceremony: audit",
+            "Execution engine: custom:runner",
+            "Current gate: gate-utf32be",
+            "Decision: pending",
+            "Decision gate: gate-utf32be",
+            "Unrelated preamble: preserve UTF-32BE",
+            "",
+            "## Intent",
+            $nonFieldText,
+            "## Trace",
+            "Trace remains unchanged."
+        ) -join "`r`n"
+        $encoding = [System.Text.UTF32Encoding]::new($true, $true, $true)
+        [byte[]]$before = Get-EncodedBytes -Text $text -Encoding $encoding -IncludePreamble
+        [System.IO.File]::WriteAllBytes($statePath, $before)
+        $expectedText = $text.Replace("Decision: pending", "Decision: approved")
+        [byte[]]$expected = Get-EncodedBytes `
+            -Text $expectedText `
+            -Encoding $encoding `
+            -IncludePreamble
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "approve" -GateId "gate-utf32be"
+        [byte[]]$after = [System.IO.File]::ReadAllBytes($statePath)
+        [byte[]]$preamble = $encoding.GetPreamble()
+        [byte[]]$actualPreamble = $after[0..($preamble.Length - 1)]
+        $decoded = $encoding.GetString(
+            $after,
+            $preamble.Length,
+            $after.Length - $preamble.Length
+        )
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-ByteSequenceEqual $actualPreamble $preamble "UTF-32BE BOM"
+        Assert-ByteSequenceEqual $after $expected "UTF-32BE exact encoded content"
+        Assert-Equal $decoded $expectedText "UTF-32BE decoded content"
+        Assert-Contains $decoded $nonFieldText "UTF-32BE non-field text"
+        Assert-Contains $decoded "Unrelated preamble: preserve UTF-32BE" "UTF-32BE preamble text"
+        Assert-Contains $decoded "Trace remains unchanged." "UTF-32BE trace text"
+    }
+}
+
+$tests += @{
     Name = "approve rejects undecodable unmarked bytes without modification"
     Run = {
         $dir = New-Fixture

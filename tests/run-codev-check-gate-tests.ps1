@@ -40,6 +40,7 @@ function Invoke-PowerShellChild {
 function Run-CodeV {
     param(
         [string]$ProjectRoot,
+        [string]$StatePath,
         [ValidateSet("check", "status", "approve")]
         [string]$Command = "check",
         [AllowEmptyString()]
@@ -59,6 +60,9 @@ function Run-CodeV {
     if ($PSBoundParameters.ContainsKey("GateId")) {
         $arguments += @("-GateId", $GateId)
     }
+    if ($PSBoundParameters.ContainsKey("StatePath")) {
+        $arguments += @("-StatePath", $StatePath)
+    }
 
     return Invoke-PowerShellChild -Arguments $arguments
 }
@@ -66,6 +70,7 @@ function Run-CodeV {
 function Run-LegacyGate {
     param(
         [string]$ProjectRoot,
+        [string]$StatePath,
         [switch]$Status
     )
 
@@ -80,6 +85,9 @@ function Run-LegacyGate {
     )
     if ($Status) {
         $arguments += "-Status"
+    }
+    if ($PSBoundParameters.ContainsKey("StatePath")) {
+        $arguments += @("-StatePath", $StatePath)
     }
 
     return Invoke-PowerShellChild -Arguments $arguments
@@ -138,6 +146,24 @@ function Assert-Contains {
     param([string]$Text, [string]$Needle, [string]$Message)
     if ($Text -notlike "*$Needle*") {
         throw "$Message Missing '$Needle' in: $Text"
+    }
+}
+
+function Assert-CommandParity {
+    param(
+        $Canonical,
+        $Legacy,
+        [int]$ExpectedExitCode,
+        [string[]]$KeyOutput,
+        [string]$Message
+    )
+
+    Assert-Equal $Canonical.ExitCode $ExpectedExitCode "$Message canonical exit code"
+    Assert-Equal $Legacy.ExitCode $ExpectedExitCode "$Message legacy exit code"
+    Assert-Equal $Legacy.ExitCode $Canonical.ExitCode "$Message matching exit codes"
+    foreach ($needle in $KeyOutput) {
+        Assert-Contains $Canonical.Output $needle "$Message canonical output"
+        Assert-Contains $Legacy.Output $needle "$Message legacy output"
     }
 }
 
@@ -907,13 +933,127 @@ $tests += @{
 }
 
 $tests += @{
-    Name = "legacy checker remains callable"
+    Name = "legacy check matches canonical check for valid approval"
     Run = {
         $dir = New-Fixture
-        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-legacy" -Decision "approved" -DecisionGate "gate-legacy"
-        $result = Run-LegacyGate -ProjectRoot $dir
-        Assert-Equal $result.ExitCode 0 "Exit code"
-        Assert-Contains $result.Output "Human approval present" "Output"
+        Write-State -ProjectRoot $dir -Gate "strict" -CurrentGate "gate-approved" -Decision "approved" -DecisionGate "gate-approved"
+        $canonical = Run-CodeV -ProjectRoot $dir
+        $legacy = Run-LegacyGate -ProjectRoot $dir
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 0 `
+            -KeyOutput @("Human approval present for gate gate-approved.") `
+            -Message "Valid approval parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy check matches canonical check for pending gate"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Gate "normal" -CurrentGate "gate-pending" -Decision "pending" -DecisionGate "gate-pending"
+        $canonical = Run-CodeV -ProjectRoot $dir
+        $legacy = Run-LegacyGate -ProjectRoot $dir
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 1 `
+            -KeyOutput @("Human approval missing for normal gate gate-pending. Decision: pending.") `
+            -Message "Pending gate parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy check matches canonical rejection of stale decision gate"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -CurrentGate "gate-new" -Decision "approved" -DecisionGate "gate-old"
+        $canonical = Run-CodeV -ProjectRoot $dir
+        $legacy = Run-LegacyGate -ProjectRoot $dir
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 2 `
+            -KeyOutput @("Decision gate 'gate-old' does not match Current gate 'gate-new'.") `
+            -Message "Stale decision gate parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy check matches canonical rejection of invalid ceremony"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -Ceremony "nonsense" -CurrentGate "gate-invalid-ceremony" -Decision "approved" -DecisionGate "gate-invalid-ceremony"
+        $canonical = Run-CodeV -ProjectRoot $dir
+        $legacy = Run-LegacyGate -ProjectRoot $dir
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 2 `
+            -KeyOutput @("Invalid Ceremony 'nonsense'.") `
+            -Message "Invalid ceremony parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy status matches canonical rejection of malformed state"
+    Run = {
+        $dir = New-Fixture
+        Write-State -ProjectRoot $dir -OmitGate
+        $canonical = Run-CodeV -ProjectRoot $dir -Command "status"
+        $legacy = Run-LegacyGate -ProjectRoot $dir -Status
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 2 `
+            -KeyOutput @("Missing 'Gate' in .codev.md.") `
+            -Message "Malformed status parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy status preserves project root paths with spaces"
+    Run = {
+        $fixtureRoot = New-Fixture
+        $dir = Join-Path $fixtureRoot "project root with spaces"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Write-State -ProjectRoot $dir -CurrentGate "gate-project-spaces" -Decision "pending" -DecisionGate "gate-project-spaces"
+        $canonical = Run-CodeV -ProjectRoot $dir -Command "status"
+        $legacy = Run-LegacyGate -ProjectRoot $dir -Status
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 0 `
+            -KeyOutput @(
+                "CO-DEV status",
+                "Current gate: gate-project-spaces",
+                "Decision gate: gate-project-spaces"
+            ) `
+            -Message "Project root spaces parity"
+    }
+}
+
+$tests += @{
+    Name = "legacy check preserves explicit state paths with spaces"
+    Run = {
+        $fixtureRoot = New-Fixture
+        $dir = Join-Path $fixtureRoot "state path project"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Write-State -ProjectRoot $dir -CurrentGate "gate-state-spaces" -Decision "approved" -DecisionGate "gate-state-spaces"
+        $stateDirectory = Join-Path $dir "state folder with spaces"
+        New-Item -ItemType Directory -Force -Path $stateDirectory | Out-Null
+        $statePath = Join-Path $stateDirectory "governance state.md"
+        Move-Item -LiteralPath (Join-Path $dir ".codev.md") -Destination $statePath
+
+        $canonical = Run-CodeV -ProjectRoot $dir -StatePath $statePath
+        $legacy = Run-LegacyGate -ProjectRoot $dir -StatePath $statePath
+        Assert-CommandParity `
+            -Canonical $canonical `
+            -Legacy $legacy `
+            -ExpectedExitCode 0 `
+            -KeyOutput @("Human approval present for gate gate-state-spaces.") `
+            -Message "Explicit state path spaces parity"
     }
 }
 

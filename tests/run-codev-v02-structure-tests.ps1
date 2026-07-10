@@ -115,8 +115,10 @@ Set-Content -LiteralPath (Join-Path $fixture ".codev.md") -Value @"
 
 Gate: ultra
 Ceremony: light
+Execution engine: superpower
 Current gate: gate-001
 Decision: pending
+Decision gate: gate-001
 
 ## Intent
 Test fixture.
@@ -132,8 +134,10 @@ Set-Content -LiteralPath (Join-Path $fixture ".codev.md") -Value @"
 
 Gate: ultra
 Ceremony: light
+Execution engine: superpower
 Current gate: gate-001
 Decision: y
+Decision gate: gate-001
 
 ## Intent
 Test fixture.

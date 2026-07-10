@@ -45,6 +45,8 @@ function ConvertFrom-CodeVText {
 
     $lineIndex = 0
     $lineStart = 0
+    $fenceCharacter = $null
+    $fenceLength = 0
     while ($lineStart -lt $Text.Length) {
         $lineEnd = $lineStart
         while (
@@ -56,22 +58,47 @@ function ConvertFrom-CodeVText {
         }
 
         $line = $Text.Substring($lineStart, $lineEnd - $lineStart)
-        if ($line -cmatch "^##\s") {
-            break
+        $parseMetadataLine = $true
+        if ($null -ne $fenceCharacter) {
+            $closingFencePattern = (
+                "^ {0,3}" +
+                [regex]::Escape($fenceCharacter) +
+                "{$fenceLength,}[ \t]*$"
+            )
+            if ([regex]::IsMatch($line, $closingFencePattern)) {
+                $fenceCharacter = $null
+                $fenceLength = 0
+            }
+            $parseMetadataLine = $false
+        } else {
+            $openingFenceMatch = [regex]::Match(
+                $line,
+                '^( {0,3})(`{3,}|~{3,})(.*)$'
+            )
+            if ($openingFenceMatch.Success) {
+                $fence = $openingFenceMatch.Groups[2].Value
+                $fenceCharacter = $fence.Substring(0, 1)
+                $fenceLength = $fence.Length
+                $parseMetadataLine = $false
+            } elseif ($line -cmatch "^ {0,3}##(?:[ \t]+|$)") {
+                break
+            }
         }
 
-        $match = [regex]::Match(
-            $line,
-            "^\s*(Decision gate|Execution engine|Current gate|Ceremony|Decision|Gate)\s*:\s*(.*?)\s*$",
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
-        if ($match.Success) {
-            $canonicalName = Get-CanonicalFieldName -Name $match.Groups[1].Value
-            $occurrences[$canonicalName] += [pscustomobject]@{
-                LineIndex = $lineIndex
-                Value = $match.Groups[2].Value.Trim()
-                ValueStart = $lineStart + $match.Groups[2].Index
-                ValueLength = $match.Groups[2].Length
+        if ($parseMetadataLine) {
+            $match = [regex]::Match(
+                $line,
+                "^ {0,3}(Decision gate|Execution engine|Current gate|Ceremony|Decision|Gate)\s*:\s*(.*?)\s*$",
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+            )
+            if ($match.Success) {
+                $canonicalName = Get-CanonicalFieldName -Name $match.Groups[1].Value
+                $occurrences[$canonicalName] += [pscustomobject]@{
+                    LineIndex = $lineIndex
+                    Value = $match.Groups[2].Value.Trim()
+                    ValueStart = $lineStart + $match.Groups[2].Index
+                    ValueLength = $match.Groups[2].Length
+                }
             }
         }
 
@@ -93,6 +120,9 @@ function ConvertFrom-CodeVText {
 
     foreach ($fieldName in $fieldNames) {
         if ($occurrences[$fieldName].Count -eq 0) {
+            if ($fieldName -ceq "Decision gate") {
+                throw "Missing 'Decision gate' in .codev.md. Set it to 'none' or the active Current gate."
+            }
             throw "Missing '$fieldName' in .codev.md."
         }
         if ($occurrences[$fieldName].Count -gt 1) {
@@ -236,41 +266,6 @@ function ConvertTo-CodeVBytes {
     return $bytes
 }
 
-function Read-CodeVStreamBytes {
-    param([Parameter(Mandatory = $true)][System.IO.FileStream]$Stream)
-
-    if ($Stream.Length -gt [int]::MaxValue) {
-        throw ".codev.md is too large to process."
-    }
-
-    [byte[]]$bytes = New-Object byte[] ([int]$Stream.Length)
-    $Stream.Position = 0
-    $offset = 0
-    while ($offset -lt $bytes.Length) {
-        $read = $Stream.Read($bytes, $offset, $bytes.Length - $offset)
-        if ($read -eq 0) {
-            throw "Unexpected end of .codev.md while reading."
-        }
-        $offset += $read
-    }
-
-    return $bytes
-}
-
-function Write-CodeVStreamBytes {
-    param(
-        [Parameter(Mandatory = $true)][System.IO.FileStream]$Stream,
-        [Parameter(Mandatory = $true)][byte[]]$Bytes
-    )
-
-    $Stream.Position = 0
-    $Stream.SetLength(0)
-    if ($Bytes.Length -gt 0) {
-        $Stream.Write($Bytes, 0, $Bytes.Length)
-    }
-    $Stream.Flush($true)
-}
-
 function Assert-CodeVBytesEqual {
     param(
         [Parameter(Mandatory = $true)][byte[]]$Actual,
@@ -284,6 +279,106 @@ function Assert-CodeVBytesEqual {
     for ($index = 0; $index -lt $Expected.Length; $index++) {
         if ($Actual[$index] -ne $Expected[$index]) {
             throw "Approval write verification failed."
+        }
+    }
+}
+
+function Get-CodeVLockPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $normalizedPath = $normalizedPath.ToUpperInvariant()
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        [byte[]]$pathBytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedPath)
+        [byte[]]$hashBytes = $sha256.ComputeHash($pathBytes)
+    } finally {
+        $sha256.Dispose()
+    }
+
+    $hash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
+    return Join-Path ([System.IO.Path]::GetTempPath()) "codev-approve-$hash.lock"
+}
+
+function Open-CodeVLockStream {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $lockPath = Get-CodeVLockPath -Path $Path
+    return [System.IO.File]::Open(
+        $lockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+}
+
+function Publish-CodeVBytesAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    $fileName = [System.IO.Path]::GetFileName($fullPath)
+    $operationId = [guid]::NewGuid().ToString("N")
+    $tempPath = Join-Path $directory ".$fileName.codev-$operationId.tmp"
+    $backupPath = Join-Path $directory ".$fileName.codev-$operationId.bak"
+    $failedPath = Join-Path $directory ".$fileName.codev-$operationId.failed"
+    $tempStream = $null
+    $replacementCompleted = $false
+
+    try {
+        $tempStream = [System.IO.File]::Open(
+            $tempPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        if ($Bytes.Length -gt 0) {
+            $tempStream.Write($Bytes, 0, $Bytes.Length)
+        }
+        $tempStream.Flush($true)
+        $tempStream.Dispose()
+        $tempStream = $null
+
+        [System.IO.File]::Replace($tempPath, $fullPath, $backupPath)
+        $replacementCompleted = $true
+        [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($fullPath)
+        Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $Bytes
+        Remove-Item -LiteralPath $backupPath -Force
+    } catch {
+        $publishException = $_.Exception
+        if (
+            $replacementCompleted -and
+            (Test-Path -LiteralPath $backupPath -PathType Leaf)
+        ) {
+            try {
+                [System.IO.File]::Replace($backupPath, $fullPath, $failedPath)
+                if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $failedPath -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                throw (
+                    "Atomic approval verification failed and the original state could not be " +
+                    "restored. Backup retained at '$backupPath'. Publish error: " +
+                    "$($publishException.Message) Restore error: $($_.Exception.Message)"
+                )
+            }
+        }
+        throw $publishException
+    } finally {
+        if ($null -ne $tempStream) {
+            $tempStream.Dispose()
+        }
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
+            Remove-Item -LiteralPath $failedPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -391,16 +486,10 @@ function Invoke-CodeVApprove {
         [AllowEmptyString()][string]$GateId
     )
 
-    $stream = $null
+    $lockStream = $null
     try {
-        $stream = [System.IO.File]::Open(
-            $Path,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::None
-        )
-
-        [byte[]]$originalBytes = Read-CodeVStreamBytes -Stream $stream
+        $lockStream = Open-CodeVLockStream -Path $Path
+        [byte[]]$originalBytes = [System.IO.File]::ReadAllBytes($Path)
         $encodingInfo = ConvertFrom-CodeVBytes -Bytes $originalBytes
         $document = ConvertFrom-CodeVText -Text $encodingInfo.Text -Path $Path
         $state = Assert-CodeVState -Document $document
@@ -434,35 +523,25 @@ function Invoke-CodeVApprove {
             -Text $updatedText `
             -EncodingInfo $encodingInfo
 
-        try {
-            Write-CodeVStreamBytes -Stream $stream -Bytes $updatedBytes
+        Publish-CodeVBytesAtomically -Path $Path -Bytes $updatedBytes
 
-            [byte[]]$persistedBytes = Read-CodeVStreamBytes -Stream $stream
-            Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $updatedBytes
-            $persistedEncodingInfo = ConvertFrom-CodeVBytes -Bytes $persistedBytes
-            $persistedDocument = ConvertFrom-CodeVText `
-                -Text $persistedEncodingInfo.Text `
-                -Path $Path
-            $persistedState = Assert-CodeVState -Document $persistedDocument
-            if ($persistedState.Decision -cne "approved") {
-                throw "Approval write did not persist Decision: approved."
-            }
-            if ($persistedState.DecisionGate -cne $state.CurrentGate) {
-                throw "Approval write did not persist the exact current gate."
-            }
-        } catch {
-            $writeException = $_.Exception
-            try {
-                Write-CodeVStreamBytes -Stream $stream -Bytes $originalBytes
-            } catch {
-            }
-            throw $writeException
+        [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($Path)
+        $persistedEncodingInfo = ConvertFrom-CodeVBytes -Bytes $persistedBytes
+        $persistedDocument = ConvertFrom-CodeVText `
+            -Text $persistedEncodingInfo.Text `
+            -Path $Path
+        $persistedState = Assert-CodeVState -Document $persistedDocument
+        if ($persistedState.Decision -cne "approved") {
+            throw "Approval write did not persist Decision: approved."
+        }
+        if ($persistedState.DecisionGate -cne $state.CurrentGate) {
+            throw "Approval write did not persist the exact current gate."
         }
 
         return $state.CurrentGate
     } finally {
-        if ($null -ne $stream) {
-            $stream.Dispose()
+        if ($null -ne $lockStream) {
+            $lockStream.Dispose()
         }
     }
 }
@@ -519,7 +598,8 @@ try {
         exit 2
     }
 
-    if ($Command -ceq "approve") {
+    $normalizedCommand = $Command.ToLowerInvariant()
+    if ($normalizedCommand -ceq "approve") {
         $approvedGate = Invoke-CodeVApprove -Path $StatePath -GateId $GateId
         Write-Output "Human approval recorded for gate $approvedGate."
         exit 0
@@ -527,7 +607,7 @@ try {
 
     $document = Read-CodeVDocument -Path $StatePath
     $state = Assert-CodeVState -Document $document
-    switch ($Command) {
+    switch ($normalizedCommand) {
         "check" {
             $checkResult = Invoke-CodeVCheck -State $state
             Write-Output $checkResult.Output

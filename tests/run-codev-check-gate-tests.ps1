@@ -259,7 +259,10 @@ $tests += @{
         Write-State -ProjectRoot $dir -OmitDecisionGate
         $result = Run-CodeV -ProjectRoot $dir
         Assert-Equal $result.ExitCode 2 "Exit code"
-        Assert-Contains $result.Output "Missing 'Decision gate'" "Output"
+        Assert-Contains `
+            $result.Output `
+            "Missing 'Decision gate' in .codev.md. Set it to 'none' or the active Current gate." `
+            "Migration output"
     }
 }
 
@@ -388,6 +391,64 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "metadata fields inside a fenced preamble example are ignored"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $content = @(
+            "# CO-DEV",
+            "",
+            '```text',
+            "Gate: free",
+            "Ceremony: light",
+            "Execution engine: superpower",
+            "Current gate: gate-fenced",
+            "Decision: pending",
+            "Decision gate: gate-fenced",
+            '```',
+            "",
+            "## Intent",
+            "Fixture."
+        ) -join "`n"
+        [System.IO.File]::WriteAllText(
+            $statePath,
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains $result.Output "Missing 'Gate' in .codev.md." "Output"
+        Assert-NotContains $result.Output "CO-DEV status" "Status output"
+    }
+}
+
+$tests += @{
+    Name = "an indented level-two heading ends the metadata preamble"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -OmitDecisionGate `
+            -FirstHeading "   ## Intent" `
+            -IntentLines @(
+                "Decision gate: gate-1",
+                "Fixture."
+            )
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Missing 'Decision gate' in .codev.md. Set it to 'none' or the active Current gate." `
+            "Output"
+        Assert-NotContains $result.Output "CO-DEV status" "Status output"
+    }
+}
+
+$tests += @{
     Name = "approve requires a gate id"
     Run = {
         $dir = New-Fixture
@@ -400,6 +461,31 @@ $tests += @{
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-Contains $result.Output "GateId is required for approve" "Output"
         Assert-ByteSequenceEqual $after $before "Missing GateId must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve command dispatch is case insensitive"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-command-case" `
+            -Decision "pending" `
+            -DecisionGate "gate-command-case"
+
+        $result = Run-CodeV `
+            -ProjectRoot $dir `
+            -Command "Approve" `
+            -GateId "gate-command-case"
+        $after = [System.IO.File]::ReadAllText((Join-Path $dir ".codev.md"))
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Human approval recorded for gate gate-command-case." `
+            "Output"
+        Assert-Contains $after "Decision: approved" "Decision update"
     }
 }
 

@@ -23,6 +23,13 @@ function Assert-Contains {
     }
 }
 
+function Assert-NotContains {
+    param([string]$Text, [string]$Needle, [string]$Message)
+    if ($Text.IndexOf($Needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw "$Message Unexpected '$Needle'."
+    }
+}
+
 function Assert-ContainsCount {
     param([string]$Text, [string]$Needle, [int]$ExpectedCount, [string]$Message)
     $actualCount = ([regex]::Matches($Text, [regex]::Escape($Needle), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)).Count
@@ -157,6 +164,10 @@ $designSpec = Get-Content -Raw -LiteralPath (Join-Path $root "docs\superpowers\s
 Assert-Contains $designSpec "preserves supported original encoding and BOM" "Design spec should describe approval encoding preservation."
 Assert-Contains $designSpec "unmarked new state files and the default template remain UTF-8 without BOM" "Design spec should retain the unmarked default encoding."
 
+$canonicalCli = Get-Content -Raw -LiteralPath (Join-Path $root "scripts\codev.ps1")
+Assert-Contains $canonicalCli "Publish-CodeVBytesAtomically" "Approval should publish through an atomic replacement helper."
+Assert-NotContains $canonicalCli ".SetLength(0)" "Approval must not truncate the live state file in place."
+
 $ciWorkflow = Get-Content -Raw -LiteralPath (Join-Path $root ".github\workflows\codev-ci.yml")
 Assert-Contains $ciWorkflow "pull_request:" "GitHub CI should run on pull requests."
 Assert-Contains $ciWorkflow "push:" "GitHub CI should run on pushes."
@@ -171,6 +182,18 @@ Assert-Contains $ciWorkflow "shell: powershell" "GitHub CI should use Windows Po
 Assert-ContainsCount $ciWorkflow "run-codev-v02-structure-tests.ps1" 2 "Both GitHub CI jobs should run structure tests."
 Assert-ContainsCount $ciWorkflow "run-codev-check-gate-tests.ps1" 2 "Both GitHub CI jobs should run gate tests."
 Assert-ContainsCount $ciWorkflow "powershell -NoProfile -ExecutionPolicy Bypass" 2 "The Windows PowerShell compatibility job should invoke both suites explicitly."
+Assert-Contains $ciWorkflow "Validate Codex plugin manifest" "GitHub CI should run the official Codex plugin validator."
+Assert-Contains $ciWorkflow "validate_plugin.py" "GitHub CI should invoke the Codex plugin validator script."
+Assert-Contains $ciWorkflow "actions/setup-python@v5" "GitHub CI should install a supported Python runtime for plugin validation."
+Assert-Contains $ciWorkflow "PyYAML>=6,<7" "GitHub CI should install the official validator dependency."
+Assert-Contains `
+    $ciWorkflow `
+    "https://raw.githubusercontent.com/openai/codex/1f0566d3f59298d1bb88820a0d35294f1eeb07ea/" `
+    "GitHub CI should pin the validator to an exact official Codex commit."
+Assert-Contains `
+    $ciWorkflow `
+    "codex-rs/skills/src/assets/samples/plugin-creator/scripts/validate_plugin.py" `
+    "GitHub CI should download the official plugin-creator validator."
 
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("codev-v03-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $fixture | Out-Null

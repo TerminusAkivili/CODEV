@@ -425,17 +425,85 @@ function Get-CodeVMetadataSignature {
     }
 
     if ($kernel -eq "Linux") {
-        $signature = & stat -c "%f|%u|%g" -- $Path 2>&1
-    } elseif ($kernel -eq "Darwin") {
-        $signature = & stat -f "%p|%u|%g" $Path 2>&1
-    } else {
-        throw "Unsupported Unix platform '$kernel' for metadata comparison."
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to read .codev.md metadata: $($signature | Out-String)"
+        $tempRoot = Join-Path (
+            [System.IO.Path]::GetTempPath()
+        ) ("codev-metadata-" + [guid]::NewGuid().ToString("N"))
+        $snapshotPath = Join-Path $tempRoot "snapshot"
+        $archivePath = Join-Path $tempRoot "snapshot.tar"
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        try {
+            $copyOutput = & cp --preserve=all -- $Path $snapshotPath 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Unable to snapshot .codev.md metadata: $($copyOutput | Out-String)"
+            }
+            $tarOutput = & tar `
+                --format=posix `
+                --acls `
+                --xattrs `
+                --numeric-owner `
+                --pax-option=delete=atime,delete=ctime `
+                -cf $archivePath `
+                -C $tempRoot `
+                snapshot 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Unable to archive .codev.md metadata: $($tarOutput | Out-String)"
+            }
+
+            [byte[]]$archiveBytes = [System.IO.File]::ReadAllBytes($archivePath)
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                [byte[]]$hashBytes = $sha256.ComputeHash($archiveBytes)
+            } finally {
+                $sha256.Dispose()
+            }
+            return [System.BitConverter]::ToString($hashBytes).Replace("-", "")
+        } finally {
+            $resolvedTempRoot = [System.IO.Path]::GetFullPath($tempRoot)
+            $resolvedSystemTemp = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::GetTempPath()
+            )
+            if (
+                $resolvedTempRoot.StartsWith(
+                    $resolvedSystemTemp,
+                    [System.StringComparison]::Ordinal
+                ) -and
+                $resolvedTempRoot -ne $resolvedSystemTemp
+            ) {
+                Remove-Item `
+                    -LiteralPath $resolvedTempRoot `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
     }
 
-    return ($signature | Out-String).Trim()
+    if ($kernel -eq "Darwin") {
+        $statOutput = & stat -f "%p|%u|%g|%Sf" $Path 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to read .codev.md stat metadata: $($statOutput | Out-String)"
+        }
+        $aclOutput = & ls -lde@ $Path 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to read .codev.md ACL metadata: $($aclOutput | Out-String)"
+        }
+        $xattrOutput = & xattr -l $Path 2>&1
+        if ($LASTEXITCODE -notin @(0, 1)) {
+            throw "Unable to read .codev.md extended attributes: $($xattrOutput | Out-String)"
+        }
+
+        $normalizedAcl = ($aclOutput | Out-String).Replace($Path, "<path>").Trim()
+        $normalizedXattr = ($xattrOutput | Out-String).Replace($Path, "<path>").Trim()
+        return (
+            ($statOutput | Out-String).Trim() +
+            "`n" +
+            $normalizedAcl +
+            "`n" +
+            $normalizedXattr
+        )
+    }
+
+    throw "Unsupported Unix platform '$kernel' for metadata comparison."
 }
 
 function Get-CodeVFileSnapshot {
@@ -459,6 +527,93 @@ function Test-CodeVFileSnapshotEqual {
     )
 }
 
+function Initialize-CodeVNativeFileSwap {
+    if ($null -ne ("CodeV.NativeFileSwap" -as [type])) {
+        return
+    }
+
+    Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+
+namespace CodeV
+{
+    public static class NativeFileSwap
+    {
+        [DllImport("libc", EntryPoint = "renameat2", SetLastError = true)]
+        public static extern int RenameAt2(
+            int oldDirectory,
+            string oldPath,
+            int newDirectory,
+            string newPath,
+            uint flags
+        );
+
+        [DllImport("libc", EntryPoint = "renamex_np", SetLastError = true)]
+        public static extern int RenameX(
+            string oldPath,
+            string newPath,
+            uint flags
+        );
+    }
+}
+"@
+}
+
+function Invoke-CodeVAtomicSwap {
+    param(
+        [Parameter(Mandatory = $true)][string]$CandidatePath,
+        [Parameter(Mandatory = $true)][string]$LivePath
+    )
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $directory = [System.IO.Path]::GetDirectoryName(
+            [System.IO.Path]::GetFullPath($LivePath)
+        )
+        $fileName = [System.IO.Path]::GetFileName($LivePath)
+        $displacedPath = Join-Path $directory (
+            ".$fileName.codev-displaced-" +
+            [guid]::NewGuid().ToString("N") +
+            ".tmp"
+        )
+        [System.IO.File]::Replace($CandidatePath, $LivePath, $displacedPath)
+        return $displacedPath
+    }
+
+    Initialize-CodeVNativeFileSwap
+    $kernel = (& uname -s).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to determine the Unix platform for atomic swap."
+    }
+
+    if ($kernel -eq "Linux") {
+        $result = [CodeV.NativeFileSwap]::RenameAt2(
+            -100,
+            $CandidatePath,
+            -100,
+            $LivePath,
+            2
+        )
+    } elseif ($kernel -eq "Darwin") {
+        $result = [CodeV.NativeFileSwap]::RenameX(
+            $CandidatePath,
+            $LivePath,
+            2
+        )
+    } else {
+        throw "Unsupported Unix platform '$kernel' for atomic swap."
+    }
+
+    if ($result -ne 0) {
+        $errorCode = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $errorMessage = [System.ComponentModel.Win32Exception]::new(
+            $errorCode
+        ).Message
+        throw "Atomic file swap failed: $errorMessage (errno $errorCode)."
+    }
+
+    return $CandidatePath
+}
+
 function Restore-CodeVFileSafely {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -468,20 +623,14 @@ function Restore-CodeVFileSafely {
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
-    $fileName = [System.IO.Path]::GetFileName($fullPath)
     $candidate = $CandidatePath
     $expected = $ExpectedLiveSnapshot
 
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $candidateSnapshot = Get-CodeVFileSnapshot -Path $candidate
-        $displacedPath = Join-Path $directory (
-            ".$fileName.codev-recovery-" +
-            [guid]::NewGuid().ToString("N") +
-            ".tmp"
-        )
-
-        [System.IO.File]::Replace($candidate, $fullPath, $displacedPath)
+        $displacedPath = Invoke-CodeVAtomicSwap `
+            -CandidatePath $candidate `
+            -LivePath $fullPath
         $displacedSnapshot = Get-CodeVFileSnapshot -Path $displacedPath
         if (
             Test-CodeVFileSnapshotEqual `
@@ -521,9 +670,10 @@ function Sync-CodeVUnixMetadata {
     $fileName = [System.IO.Path]::GetFileName($fullPath)
     $operationId = [guid]::NewGuid().ToString("N")
     $tempPath = Join-Path $directory ".$fileName.codev-$operationId.metadata.tmp"
-    $displacedPath = Join-Path $directory ".$fileName.codev-$operationId.metadata.bak"
+    $displacedPath = $null
     $expectedLiveSnapshot = Get-CodeVFileSnapshot -Path $fullPath
     $candidateSnapshot = $null
+    $swapCompleted = $false
 
     try {
         Copy-CodeVFileForAtomicWrite `
@@ -531,7 +681,10 @@ function Sync-CodeVUnixMetadata {
             -DestinationPath $tempPath
         Write-CodeVPreparedFile -Path $tempPath -Bytes $Bytes
         $candidateSnapshot = Get-CodeVFileSnapshot -Path $tempPath
-        [System.IO.File]::Replace($tempPath, $fullPath, $displacedPath)
+        $displacedPath = Invoke-CodeVAtomicSwap `
+            -CandidatePath $tempPath `
+            -LivePath $fullPath
+        $swapCompleted = $true
     } catch {
         $syncException = $_.Exception
         try {
@@ -547,7 +700,10 @@ function Sync-CodeVUnixMetadata {
         }
         throw $syncException
     } finally {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+        if (
+            -not $swapCompleted -and
+            (Test-Path -LiteralPath $tempPath -PathType Leaf)
+        ) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
         }
     }
@@ -580,12 +736,12 @@ function Sync-CodeVUnixMetadata {
     Remove-Item -LiteralPath $MetadataSourcePath -Force -ErrorAction SilentlyContinue
 }
 
-function Invoke-CodeVTestDelay {
+function Get-CodeVTestDelayMilliseconds {
     param([Parameter(Mandatory = $true)][string]$EnvironmentVariable)
 
     $delayText = [System.Environment]::GetEnvironmentVariable($EnvironmentVariable)
     if ([string]::IsNullOrWhiteSpace($delayText)) {
-        return
+        return 0
     }
 
     $delayMilliseconds = 0
@@ -596,7 +752,15 @@ function Invoke-CodeVTestDelay {
     ) {
         throw "Invalid $EnvironmentVariable value."
     }
-    Start-Sleep -Milliseconds $delayMilliseconds
+    return $delayMilliseconds
+}
+
+function Invoke-CodeVTestDelay {
+    param([int]$Milliseconds)
+
+    if ($Milliseconds -gt 0) {
+        Start-Sleep -Milliseconds $Milliseconds
+    }
 }
 
 function Publish-CodeVBytesAtomically {
@@ -611,8 +775,13 @@ function Publish-CodeVBytesAtomically {
     $fileName = [System.IO.Path]::GetFileName($fullPath)
     $operationId = [guid]::NewGuid().ToString("N")
     $tempPath = Join-Path $directory ".$fileName.codev-$operationId.tmp"
-    $backupPath = Join-Path $directory ".$fileName.codev-$operationId.bak"
+    $backupPath = $null
     $publishedSnapshot = $null
+    $swapCompleted = $false
+    $publicationDelay = Get-CodeVTestDelayMilliseconds `
+        -EnvironmentVariable "CODEV_TEST_APPROVAL_DELAY_MS"
+    $recoveryDelay = Get-CodeVTestDelayMilliseconds `
+        -EnvironmentVariable "CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"
 
     try {
         Copy-CodeVFileForAtomicWrite `
@@ -621,13 +790,19 @@ function Publish-CodeVBytesAtomically {
         Write-CodeVPreparedFile -Path $tempPath -Bytes $Bytes
         $publishedSnapshot = Get-CodeVFileSnapshot -Path $tempPath
 
-        Invoke-CodeVTestDelay -EnvironmentVariable "CODEV_TEST_APPROVAL_DELAY_MS"
+        Invoke-CodeVTestDelay -Milliseconds $publicationDelay
 
-        [System.IO.File]::Replace($tempPath, $fullPath, $backupPath)
+        $backupPath = Invoke-CodeVAtomicSwap `
+            -CandidatePath $tempPath `
+            -LivePath $fullPath
+        $swapCompleted = $true
     } catch {
         throw $_.Exception
     } finally {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+        if (
+            -not $swapCompleted -and
+            (Test-Path -LiteralPath $tempPath -PathType Leaf)
+        ) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
         }
     }
@@ -643,8 +818,7 @@ function Publish-CodeVBytesAtomically {
     } catch {
         $publishException = $_.Exception
         try {
-            Invoke-CodeVTestDelay `
-                -EnvironmentVariable "CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS"
+            Invoke-CodeVTestDelay -Milliseconds $recoveryDelay
             Restore-CodeVFileSafely `
                 -Path $fullPath `
                 -CandidatePath $backupPath `

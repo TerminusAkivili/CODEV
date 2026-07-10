@@ -228,6 +228,45 @@ function Get-EncodedBytes {
     return $bytes
 }
 
+function Write-Utf8TextAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    $directory = [System.IO.Path]::GetDirectoryName(
+        [System.IO.Path]::GetFullPath($Path)
+    )
+    $fileName = [System.IO.Path]::GetFileName($Path)
+    $operationId = [guid]::NewGuid().ToString("N")
+    $tempPath = Join-Path $directory ".$fileName.test-$operationId.tmp"
+    $backupPath = Join-Path $directory ".$fileName.test-$operationId.bak"
+    [System.IO.File]::WriteAllText(
+        $tempPath,
+        $Text,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+
+    try {
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            [System.IO.File]::Replace($tempPath, $Path, $backupPath)
+            Remove-Item `
+                -LiteralPath $backupPath `
+                -Force `
+                -ErrorAction SilentlyContinue
+        } else {
+            $moveOutput = & mv -f $tempPath $Path 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Atomic test save failed: $($moveOutput | Out-String)"
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 $tests = @()
 
 $tests += @{
@@ -555,6 +594,42 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "invalid recovery delay fails before approval publication"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-invalid-delay" `
+            -Decision "pending" `
+            -DecisionGate "gate-invalid-delay"
+        $statePath = Join-Path $dir ".codev.md"
+        $before = [System.IO.File]::ReadAllBytes($statePath)
+
+        $previousDelay = $env:CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS
+        $env:CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS = "invalid"
+        try {
+            $result = Run-CodeV `
+                -ProjectRoot $dir `
+                -Command "approve" `
+                -GateId "gate-invalid-delay"
+        } finally {
+            $env:CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS = $previousDelay
+        }
+        $after = [System.IO.File]::ReadAllBytes($statePath)
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Invalid CODEV_TEST_APPROVAL_RECOVERY_DELAY_MS value." `
+            "Output"
+        Assert-ByteSequenceEqual `
+            $after `
+            $before `
+            "Invalid recovery delay must fail before publication."
+    }
+}
+
+$tests += @{
     Name = "approve rejects a different gate id without changing bytes"
     Run = {
         $dir = New-Fixture
@@ -704,11 +779,7 @@ $tests += @{
                     Replace("Current gate: gate-race", "Current gate: gate-concurrent").
                     Replace("Decision gate: gate-race", "Decision gate: gate-concurrent").
                     Replace("Original intent.", "Concurrent intent.")
-                [System.IO.File]::WriteAllText(
-                    $statePath,
-                    $concurrentText,
-                    [System.Text.UTF8Encoding]::new($false)
-                )
+                Write-Utf8TextAtomically -Path $statePath -Text $concurrentText
                 $concurrentEditCompleted = $true
             } catch [System.IO.IOException] {
                 Start-Sleep -Milliseconds 20
@@ -814,11 +885,7 @@ $tests += @{
             throw "Approval process did not pause before recovery race setup."
         }
 
-        [System.IO.File]::WriteAllText(
-            $statePath,
-            $editB,
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        Write-Utf8TextAtomically -Path $statePath -Text $editB
 
         $approvedStateVisible = $false
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -844,11 +911,7 @@ $tests += @{
             throw "Approval process did not reach the recovery delay."
         }
 
-        [System.IO.File]::WriteAllText(
-            $statePath,
-            $editC,
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        Write-Utf8TextAtomically -Path $statePath -Text $editC
 
         $process.WaitForExit()
         $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()

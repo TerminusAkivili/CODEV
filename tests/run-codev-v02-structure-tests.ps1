@@ -167,6 +167,10 @@ Assert-Contains $designSpec "unmarked new state files and the default template r
 $canonicalCli = Get-Content -Raw -LiteralPath (Join-Path $root "scripts\codev.ps1")
 Assert-Contains $canonicalCli "Publish-CodeVBytesAtomically" "Approval should publish through an atomic replacement helper."
 Assert-Contains $canonicalCli "Restore-CodeVFileSafely" "Approval recovery should preserve superseding state changes."
+Assert-Contains $canonicalCli "renameat2" "Linux approval should use a single atomic file exchange."
+Assert-Contains $canonicalCli "renamex_np" "macOS approval should use a single atomic file exchange."
+Assert-Contains $canonicalCli "--acls" "Unix recovery should fingerprint ACL metadata."
+Assert-Contains $canonicalCli "--xattrs" "Unix recovery should fingerprint extended attributes."
 Assert-NotContains $canonicalCli ".SetLength(0)" "Approval must not truncate the live state file in place."
 Assert-NotContains $canonicalCli "CODEV_TEST_APPROVAL_READY_PATH" "Approval must not expose an arbitrary-file test hook."
 

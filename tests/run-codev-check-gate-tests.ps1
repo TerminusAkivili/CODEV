@@ -449,6 +449,42 @@ $tests += @{
 }
 
 $tests += @{
+    Name = "a Setext level-two heading ends the metadata preamble"
+    Run = {
+        $dir = New-Fixture
+        $statePath = Join-Path $dir ".codev.md"
+        $content = @(
+            "# CO-DEV",
+            "",
+            "Gate: normal",
+            "Ceremony: light",
+            "Execution engine: superpower",
+            "Current gate: gate-setext",
+            "Decision: pending",
+            "",
+            "Intent",
+            "------",
+            "Decision gate: gate-setext",
+            "Fixture."
+        ) -join "`n"
+        [System.IO.File]::WriteAllText(
+            $statePath,
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+
+        $result = Run-CodeV -ProjectRoot $dir -Command "status"
+
+        Assert-Equal $result.ExitCode 2 "Exit code"
+        Assert-Contains `
+            $result.Output `
+            "Missing 'Decision gate' in .codev.md. Set it to 'none' or the active Current gate." `
+            "Output"
+        Assert-NotContains $result.Output "CO-DEV status" "Status output"
+    }
+}
+
+$tests += @{
     Name = "approve requires a gate id"
     Run = {
         $dir = New-Fixture
@@ -559,6 +595,145 @@ $tests += @{
 
         Assert-Equal $result.ExitCode 2 "Exit code"
         Assert-ByteSequenceEqual $after $before "Locked approval must not change the state file."
+    }
+}
+
+$tests += @{
+    Name = "approve does not overwrite a concurrent state change"
+    Run = {
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-race" `
+            -Decision "pending" `
+            -DecisionGate "gate-race" `
+            -IntentLines @("Original intent.")
+        $statePath = Join-Path $dir ".codev.md"
+        $readyPath = Join-Path $dir "approval-ready.signal"
+        $powerShellExecutable = Get-PowerShellExecutable
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $codevScript,
+            "approve",
+            "-ProjectRoot",
+            $dir,
+            "-GateId",
+            "gate-race"
+        )
+
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $powerShellExecutable
+        $processInfo.Arguments = $arguments -join " "
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $processInfo.Environment["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+            $processInfo.Environment["CODEV_TEST_APPROVAL_READY_PATH"] = $readyPath
+        } else {
+            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_DELAY_MS"] = "2000"
+            $processInfo.EnvironmentVariables["CODEV_TEST_APPROVAL_READY_PATH"] = $readyPath
+        }
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $null = $process.Start()
+
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+                break
+            }
+            if ($process.HasExited) {
+                break
+            }
+            Start-Sleep -Milliseconds 20
+        }
+
+        if (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Approval process did not reach the pre-publication test point."
+        }
+
+        $concurrentEditCompleted = $false
+        $editDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not $concurrentEditCompleted -and [DateTime]::UtcNow -lt $editDeadline) {
+            try {
+                $concurrentText = [System.IO.File]::ReadAllText($statePath).
+                    Replace("Current gate: gate-race", "Current gate: gate-concurrent").
+                    Replace("Decision gate: gate-race", "Decision gate: gate-concurrent").
+                    Replace("Original intent.", "Concurrent intent.")
+                [System.IO.File]::WriteAllText(
+                    $statePath,
+                    $concurrentText,
+                    [System.Text.UTF8Encoding]::new($false)
+                )
+                $concurrentEditCompleted = $true
+            } catch [System.IO.IOException] {
+                Start-Sleep -Milliseconds 20
+            }
+        }
+
+        if (-not $concurrentEditCompleted) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            $process.WaitForExit()
+            throw "Concurrent state edit could not complete."
+        }
+
+        $process.WaitForExit()
+        $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
+        $exitCode = $process.ExitCode
+        $after = [System.IO.File]::ReadAllText($statePath)
+
+        Assert-Equal $exitCode 2 "Exit code"
+        Assert-Contains $output "State changed during approval" "Output"
+        Assert-Contains $after "Current gate: gate-concurrent" "Concurrent gate preservation"
+        Assert-Contains $after "Decision gate: gate-concurrent" "Concurrent binding preservation"
+        Assert-Contains $after "Concurrent intent." "Concurrent content preservation"
+        Assert-NotContains $after "Decision: approved" "Approval must not overwrite concurrent state"
+    }
+}
+
+$tests += @{
+    Name = "approve preserves Unix file permissions"
+    Run = {
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            return
+        }
+
+        $dir = New-Fixture
+        Write-State `
+            -ProjectRoot $dir `
+            -CurrentGate "gate-mode" `
+            -Decision "pending" `
+            -DecisionGate "gate-mode"
+        $statePath = Join-Path $dir ".codev.md"
+        & chmod 600 $statePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to set Unix fixture permissions."
+        }
+
+        $result = Run-CodeV `
+            -ProjectRoot $dir `
+            -Command "approve" `
+            -GateId "gate-mode"
+        $kernel = (& uname -s).Trim()
+        if ($kernel -eq "Darwin") {
+            $mode = (& stat -f "%Lp" $statePath).Trim()
+        } else {
+            $mode = (& stat -c "%a" $statePath).Trim()
+        }
+
+        Assert-Equal $result.ExitCode 0 "Exit code"
+        Assert-Equal $mode "600" "Unix state file mode"
     }
 }
 

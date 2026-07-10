@@ -58,6 +58,35 @@ function ConvertFrom-CodeVText {
         }
 
         $line = $Text.Substring($lineStart, $lineEnd - $lineStart)
+        $nextLineStart = $Text.Length
+        $nextLine = $null
+        if ($lineEnd -lt $Text.Length) {
+            if (
+                $Text[$lineEnd] -eq "`r" -and
+                ($lineEnd + 1) -lt $Text.Length -and
+                $Text[$lineEnd + 1] -eq "`n"
+            ) {
+                $nextLineStart = $lineEnd + 2
+            } else {
+                $nextLineStart = $lineEnd + 1
+            }
+
+            if ($nextLineStart -lt $Text.Length) {
+                $nextLineEnd = $nextLineStart
+                while (
+                    $nextLineEnd -lt $Text.Length -and
+                    $Text[$nextLineEnd] -ne "`r" -and
+                    $Text[$nextLineEnd] -ne "`n"
+                ) {
+                    $nextLineEnd++
+                }
+                $nextLine = $Text.Substring(
+                    $nextLineStart,
+                    $nextLineEnd - $nextLineStart
+                )
+            }
+        }
+
         $parseMetadataLine = $true
         if ($null -ne $fenceCharacter) {
             $closingFencePattern = (
@@ -85,6 +114,15 @@ function ConvertFrom-CodeVText {
             }
         }
 
+        if (
+            $parseMetadataLine -and
+            $line -cmatch "^ {0,3}\S" -and
+            $null -ne $nextLine -and
+            $nextLine -cmatch "^ {0,3}-+[ \t]*$"
+        ) {
+            break
+        }
+
         if ($parseMetadataLine) {
             $match = [regex]::Match(
                 $line,
@@ -106,15 +144,7 @@ function ConvertFrom-CodeVText {
             break
         }
 
-        if (
-            $Text[$lineEnd] -eq "`r" -and
-            ($lineEnd + 1) -lt $Text.Length -and
-            $Text[$lineEnd + 1] -eq "`n"
-        ) {
-            $lineStart = $lineEnd + 2
-        } else {
-            $lineStart = $lineEnd + 1
-        }
+        $lineStart = $nextLineStart
         $lineIndex++
     }
 
@@ -266,20 +296,34 @@ function ConvertTo-CodeVBytes {
     return $bytes
 }
 
-function Assert-CodeVBytesEqual {
+function Test-CodeVBytesEqual {
     param(
         [Parameter(Mandatory = $true)][byte[]]$Actual,
         [Parameter(Mandatory = $true)][byte[]]$Expected
     )
 
     if ($Actual.Length -ne $Expected.Length) {
-        throw "Approval write verification failed."
+        return $false
     }
 
     for ($index = 0; $index -lt $Expected.Length; $index++) {
         if ($Actual[$index] -ne $Expected[$index]) {
-            throw "Approval write verification failed."
+            return $false
         }
+    }
+
+    return $true
+}
+
+function Assert-CodeVBytesEqual {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Actual,
+        [Parameter(Mandatory = $true)][byte[]]$Expected,
+        [string]$Message = "Approval write verification failed."
+    )
+
+    if (-not (Test-CodeVBytesEqual -Actual $Actual -Expected $Expected)) {
+        throw $Message
     }
 }
 
@@ -315,10 +359,39 @@ function Open-CodeVLockStream {
     )
 }
 
+function Copy-CodeVFileForAtomicWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        [System.IO.File]::Copy($SourcePath, $DestinationPath, $false)
+        return
+    }
+
+    $kernel = (& uname -s).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to determine the Unix platform for atomic approval."
+    }
+
+    if ($kernel -eq "Linux") {
+        $copyOutput = & cp --preserve=all -- $SourcePath $DestinationPath 2>&1
+    } elseif ($kernel -eq "Darwin") {
+        $copyOutput = & cp -p $SourcePath $DestinationPath 2>&1
+    } else {
+        throw "Unsupported Unix platform '$kernel' for metadata-preserving approval."
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to preserve .codev.md metadata: $($copyOutput | Out-String)"
+    }
+}
+
 function Publish-CodeVBytesAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][byte[]]$Bytes
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][byte[]]$ExpectedBytes
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -332,9 +405,12 @@ function Publish-CodeVBytesAtomically {
     $replacementCompleted = $false
 
     try {
+        Copy-CodeVFileForAtomicWrite `
+            -SourcePath $fullPath `
+            -DestinationPath $tempPath
         $tempStream = [System.IO.File]::Open(
             $tempPath,
-            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileMode]::Create,
             [System.IO.FileAccess]::Write,
             [System.IO.FileShare]::None
         )
@@ -345,29 +421,85 @@ function Publish-CodeVBytesAtomically {
         $tempStream.Dispose()
         $tempStream = $null
 
+        $testReadyPath = [System.Environment]::GetEnvironmentVariable(
+            "CODEV_TEST_APPROVAL_READY_PATH"
+        )
+        if (-not [string]::IsNullOrWhiteSpace($testReadyPath)) {
+            [System.IO.File]::WriteAllText($testReadyPath, "ready")
+        }
+
+        $testDelayText = [System.Environment]::GetEnvironmentVariable(
+            "CODEV_TEST_APPROVAL_DELAY_MS"
+        )
+        if (-not [string]::IsNullOrWhiteSpace($testDelayText)) {
+            $testDelayMilliseconds = 0
+            if (
+                -not [int]::TryParse(
+                    $testDelayText,
+                    [ref]$testDelayMilliseconds
+                ) -or
+                $testDelayMilliseconds -lt 0 -or
+                $testDelayMilliseconds -gt 10000
+            ) {
+                throw "Invalid CODEV_TEST_APPROVAL_DELAY_MS value."
+            }
+            Start-Sleep -Milliseconds $testDelayMilliseconds
+        }
+
         [System.IO.File]::Replace($tempPath, $fullPath, $backupPath)
         $replacementCompleted = $true
+        [byte[]]$replacedBytes = [System.IO.File]::ReadAllBytes($backupPath)
+        Assert-CodeVBytesEqual `
+            -Actual $replacedBytes `
+            -Expected $ExpectedBytes `
+            -Message "State changed during approval; approval was not recorded."
         [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($fullPath)
         Assert-CodeVBytesEqual -Actual $persistedBytes -Expected $Bytes
-        Remove-Item -LiteralPath $backupPath -Force
+        Remove-Item `
+            -LiteralPath $backupPath `
+            -Force `
+            -ErrorAction SilentlyContinue
     } catch {
         $publishException = $_.Exception
         if (
             $replacementCompleted -and
             (Test-Path -LiteralPath $backupPath -PathType Leaf)
         ) {
+            $currentBytes = $null
             try {
-                [System.IO.File]::Replace($backupPath, $fullPath, $failedPath)
-                if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
-                    Remove-Item -LiteralPath $failedPath -Force -ErrorAction SilentlyContinue
-                }
+                [byte[]]$currentBytes = [System.IO.File]::ReadAllBytes($fullPath)
             } catch {
+            }
+
+            if (
+                $null -ne $currentBytes -and
+                (Test-CodeVBytesEqual -Actual $currentBytes -Expected $Bytes)
+            ) {
+                try {
+                    [System.IO.File]::Replace($backupPath, $fullPath, $failedPath)
+                    if (Test-Path -LiteralPath $failedPath -PathType Leaf) {
+                        Remove-Item `
+                            -LiteralPath $failedPath `
+                            -Force `
+                            -ErrorAction SilentlyContinue
+                    }
+                } catch {
+                    throw (
+                        "Atomic approval verification failed and the original state could not be " +
+                        "restored. Backup retained at '$backupPath'. Publish error: " +
+                        "$($publishException.Message) Restore error: $($_.Exception.Message)"
+                    )
+                }
                 throw (
-                    "Atomic approval verification failed and the original state could not be " +
-                    "restored. Backup retained at '$backupPath'. Publish error: " +
-                    "$($publishException.Message) Restore error: $($_.Exception.Message)"
+                    $publishException
                 )
             }
+
+            throw (
+                "Approval publication was superseded by another state change; the current " +
+                "state was preserved. Backup retained at '$backupPath'. Publish error: " +
+                $publishException.Message
+            )
         }
         throw $publishException
     } finally {
@@ -523,7 +655,10 @@ function Invoke-CodeVApprove {
             -Text $updatedText `
             -EncodingInfo $encodingInfo
 
-        Publish-CodeVBytesAtomically -Path $Path -Bytes $updatedBytes
+        Publish-CodeVBytesAtomically `
+            -Path $Path `
+            -Bytes $updatedBytes `
+            -ExpectedBytes $originalBytes
 
         [byte[]]$persistedBytes = [System.IO.File]::ReadAllBytes($Path)
         $persistedEncodingInfo = ConvertFrom-CodeVBytes -Bytes $persistedBytes

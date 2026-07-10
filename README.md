@@ -108,7 +108,7 @@ Windows PowerShell 5.1 remains supported on Windows. macOS and Linux require Pow
 
 `scripts/codev-check-gate.ps1` remains the compatibility wrapper for the original Windows command. It delegates check and `-Status` operations to `scripts/codev.ps1` and forwards the exit code.
 
-The `approve` command performs a transactional approval write. It flushes a same-directory temporary file before atomically replacing `.codev.md`; interruption leaves either the complete previous state or the complete approved state. Validation failures before replacement leave the file unchanged, and post-replacement verification failure restores the previous state. Successful approval preserves the supported original encoding and BOM, newline style, and non-field content. New unmarked state files and the default template remain UTF-8 without BOM.
+The `approve` command performs a transactional approval write. It flushes a same-directory temporary file before atomically replacing `.codev.md`; interruption leaves either the complete previous state or the complete approved state. The atomic backup is compared with the validated snapshot, so a concurrent state change is restored instead of overwritten. Validation failures before replacement leave the file unchanged, and post-replacement verification restores the previous state only when the live file is still the version written by this approval. Successful approval preserves the supported original encoding and BOM, newline style, non-field content, and Unix permission/ACL metadata. New unmarked state files and the default template remain UTF-8 without BOM.
 
 The CLI is a mechanical guardrail. The CodeV skills still own judgment about intent, shape, drift, and human review.
 
